@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# EndeavourOS KDE - LEAN installer v57 (photo/video, Google, Ollama, iPhone diagnostics): vibe coding, Steam, Ledger/DeFi, PDF/OCR
+# EndeavourOS KDE - LEAN installer repaired 2026-11-07 (photo/video, Google, Ollama, iPhone diagnostics): vibe coding, Steam, Ledger/DeFi, PDF/OCR
 # No automatic removal of personal data, drivers or desktop components.
 # AUR builds are untrusted; check PKGBUILD independently before execution.
 # Office: LibreOffice only. Installazioni automatiche; rimozioni con conferma.
@@ -97,7 +97,7 @@ report_final(){
  RUN_FINISHED=1
  {
    echo '============================================================'
-   echo ' REPORT FINALE — ENDEAVOUROS LEAN v57'
+   echo ' REPORT FINALE — ENDEAVOUROS LEAN repaired'
    echo '============================================================'
    echo "Modalità: $RUN_MODE"
    echo "Inizio: $RUN_STARTED"
@@ -361,84 +361,35 @@ lean_office_fonts(){
 }
 # AppFlowy: alternativa open-source a Notion. AUR solo con consenso esplicito.
 lean_appflowy(){
- say 'AppFlowy: installazione desktop nativa (pacman -> AUR, con consenso)'
- if [[ $(uname -m) != x86_64 ]]; then
-   report_skip 'AppFlowy: architettura non x86_64; installazione saltata'
-   return 0
- fi
- local pkg='' candidate found=0 f bin=''
+ say 'AppFlowy: verifica e installazione desktop nativa AUR'
  if has_pkg appflowy-bin || has_pkg appflowy; then
-   report_ok 'AppFlowy: pacchetto già installato'
+   report_ok 'AppFlowy: già installato'
  else
-   for candidate in appflowy-bin appflowy; do
-     if has_repo "$candidate"; then
-       install_repo "$candidate"
-       break
-     fi
-   done
-   if ! has_pkg appflowy-bin && ! has_pkg appflowy; then
-     if ! command -v yay >/dev/null 2>&1; then
-       warn 'AppFlowy richiede normalmente AUR; yay non è installato.'
-       if has_repo yay && ask 'Installare yay dai repository configurati per poter installare AppFlowy?'; then
-         install_repo yay
-       fi
-     fi
-     if command -v yay >/dev/null 2>&1; then
-       for candidate in appflowy-bin appflowy; do
-         if yay -Si "$candidate" >/dev/null 2>&1; then pkg="$candidate"; break; fi
-       done
-       if [[ -n "$pkg" ]]; then
-         echo "AppFlowy: trovato $pkg su AUR (PKGBUILD di terze parti)."
-         if ask "Vuoi esaminare e installare $pkg tramite yay?"; then
-           if yay -S --needed "$pkg" && has_pkg "$pkg"; then
-             report_ok "AppFlowy: installato tramite AUR ($pkg)"
-           else
-             report_fail "AppFlowy: installazione AUR fallita ($pkg); consultare il log $LOG"
-           fi
-         else
-           report_skip 'AppFlowy: installazione AUR non autorizzata'
-         fi
-       else
-         report_fail 'AppFlowy: nessun pacchetto appflowy-bin/appflowy trovato in AUR; verificare connessione, yay e nomi pacchetti'
-       fi
-     else
-       report_fail 'AppFlowy: yay assente; installare yay in modo verificato e riprovare con opzione 53'
-     fi
+   if ! command -v yay >/dev/null 2>&1; then
+     report_fail 'AppFlowy: yay non disponibile; installare yay e riprovare'
+     return 1
    fi
- fi
- if has_pkg appflowy-bin || has_pkg appflowy; then
-   for f in /usr/share/applications/*appflowy*.desktop /usr/share/applications/*AppFlowy*.desktop "$HOME"/.local/share/applications/*appflowy*.desktop "$HOME"/.local/share/applications/*AppFlowy*.desktop; do
-     [[ -f "$f" ]] && { found=1; break; }
-   done
-   for bin in /usr/bin/appflowy /usr/bin/app_flowy /opt/AppFlowy/AppFlowy; do
-     [[ -x "$bin" ]] && break
-   done
-   if (( !found )) && [[ -x "$bin" ]]; then
-     mkdir -p "$HOME/.local/share/applications"
-     cat > "$HOME/.local/share/applications/lean-appflowy.desktop" <<EOFAPPFLOWY
-[Desktop Entry]
-Type=Application
-Name=AppFlowy
-Comment=Workspace open source per note, progetti e database
-Exec=$bin
-Icon=appflowy
-Terminal=false
-Categories=Office;Utility;
-EOFAPPFLOWY
-     report_ok 'AppFlowy: collegamento KDE di fallback creato'
-   fi
-   if (( !found )) && [[ ! -x "$bin" ]]; then
-     report_warn 'AppFlowy: pacchetto installato ma launcher/eseguibile non individuato; controllare pacman -Ql appflowy-bin'
+   if ask 'Installare AppFlowy tramite yay (appflowy-bin)?'; then
+     if ! yay -S --needed appflowy-bin; then
+       report_fail "AppFlowy: installazione AUR fallita; controllare log $LOG"
+       return 1
+     fi
    else
-     report_ok 'AppFlowy: launcher o eseguibile individuato'
+     report_skip 'AppFlowy: installazione rifiutata'; return 0
    fi
-   if command -v kbuildsycoca6 >/dev/null 2>&1; then
-     kbuildsycoca6 --noincremental >/dev/null 2>&1 || report_warn 'AppFlowy: cache KDE non aggiornata'
-   fi
- else
-   report_fail 'AppFlowy: non risulta installato; vedere messaggi sopra e log'
  fi
+ if ! has_pkg appflowy-bin && ! has_pkg appflowy; then
+   report_fail 'AppFlowy: pacchetto assente dopo installazione'; return 1
+ fi
+ local desktop found=0
+ for desktop in /usr/share/applications/*[Aa]pp[Ff]lowy*.desktop "$HOME"/.local/share/applications/*[Aa]pp[Ff]lowy*.desktop; do
+   [[ -f "$desktop" ]] && { found=1; break; }
+ done
+ if (( found )); then report_ok "AppFlowy: launcher nativo presente ($desktop)"
+ else report_warn 'AppFlowy: pacchetto presente, launcher nativo non individuato'; fi
+ if command -v kbuildsycoca6 >/dev/null 2>&1; then kbuildsycoca6 --noincremental >/dev/null 2>&1 || true; fi
 }
+
 lean_appflowy_report(){
  echo
  echo 'APPFLOWY — WORKSPACE / NOTE'
@@ -477,28 +428,21 @@ lean_browser_audit(){
 # Ripulisce esclusivamente i launcher web creati da LEAN o riconoscibili
 # come suoi vecchi collegamenti. Non tocca il menu KDE di sistema né le app native.
 lean_clean_web_shortcuts(){
- say 'KDE: rimozione shortcut LEAN precedenti e duplicati web riconosciuti'
- local appdir="$HOME/.local/share/applications" file base count=0
- [[ -d "$appdir" ]] || return 0
- local -a candidates=(
-   "$appdir"/ai-*-ai.desktop "$appdir"/lean-google-*.desktop
-   "$appdir"/google-*.desktop "$appdir"/famiglia-*.desktop
-   "$appdir"/lean-tuta-mail.desktop "$appdir"/endeavouros-lean-ferdium.desktop
- )
- for file in "${candidates[@]}"; do
+ say 'KDE: archiviazione dei soli launcher marcati LEAN'
+ local dir="$HOME/.local/share/applications" file count=0 backup
+ [[ -d "$dir" ]] || return 0
+ backup="$HOME/.local/share/endeavouros-lean/launcher-backup/$(date +%Y%m%d-%H%M%S)"
+ for file in "$dir"/*.desktop; do
    [[ -f "$file" && ! -L "$file" ]] || continue
-   base=${file##*/}
-   if grep -q '^X-EndeavourOS-LEAN-Managed=true$' "$file" ||
-      { [[ "$base" == ai-*-ai.desktop || "$base" == lean-google-*.desktop ||
-            "$base" == famiglia-*.desktop || "$base" == google-*.desktop ||
-            "$base" == lean-tuta-mail.desktop || "$base" == endeavouros-lean-ferdium.desktop ]] &&
-        grep -Eq '^Exec=.*(chatgpt\\.com|claude\\.ai|gemini\\.google\\.com|perplexity\\.ai|grok\\.com|docs\\.google\\.com|drive\\.google\\.com|calendar\\.google\\.com|tasks\\.google\\.com|mail\\.google\\.com|keep\\.google\\.com|app\\.tuta\\.com|ferdium)' "$file"; }; then
-      rm -- "$file" || { report_warn "Impossibile rimuovere $file"; continue; }
-      count=$((count+1))
+   if grep -qx 'X-EndeavourOS-LEAN-Managed=true' "$file"; then
+     mkdir -p "$backup"
+     mv -- "$file" "$backup/" || { report_fail "Impossibile archiviare $file"; return 1; }
+     count=$((count+1))
    fi
  done
- report_ok "Shortcut LEAN precedenti rimossi: $count"
+ report_ok "Launcher LEAN archiviati: $count; backup $backup"
 }
+
 lean_rebuild_web_shortcuts(){
  say 'KDE: audit browser -> pulizia LEAN -> shortcut unici -> cache menu'
  lean_browser_audit
@@ -540,57 +484,48 @@ lean_shortcut_exec(){
 }
 
 lean_tuta_desktop(){
- say 'Tuta Desktop: verifica client nativo e installazione AUR (nessuno shortcut web)'
+ say 'Tuta Desktop: installazione AUR e verifica launcher nativo'
  local pkg='' candidate entry desktop_id='' legacy="$HOME/.local/share/applications/lean-tuta-mail.desktop"
- # Non installare un secondo client quando uno è già presente.
  for candidate in tutanota-desktop-bin tutanota-desktop tuta-desktop; do
    if has_pkg "$candidate"; then pkg="$candidate"; break; fi
  done
  if [[ -z "$pkg" ]]; then
    if ! command -v yay >/dev/null 2>&1; then
-     report_fail 'Tuta: yay assente. Installa/configura yay prima di riprovare.'
-     return 1
+     report_fail 'Tuta: yay non disponibile'; return 1
    fi
-   # Il pacchetto binario AUR viene preferito; nessun fallback web silenzioso.
-   if yay -Si tutanota-desktop-bin >/dev/null 2>&1; then
-     pkg=tutanota-desktop-bin
-   elif yay -Si tutanota-desktop >/dev/null 2>&1; then
-     pkg=tutanota-desktop
-   else
-     report_fail 'Tuta: pacchetto AUR non disponibile; nessun launcher fittizio creato'
-     return 1
-   fi
-   echo "Installazione Tuta da AUR: $pkg"
-   if ! yay -S --needed "$pkg"; then
-     report_fail "Tuta: installazione AUR fallita ($pkg)"
-     return 1
+   # L'installazione viene effettivamente tentata: yay -Si non e' affidabile
+   # come prerequisito quando i metadati AUR non sono in cache.
+   for candidate in tutanota-desktop-bin tutanota-desktop; do
+     echo "Tentativo AUR: $candidate"
+     if yay -S --needed "$candidate" && has_pkg "$candidate"; then
+       pkg="$candidate"; break
+     fi
+     warn "Tuta: tentativo $candidate non riuscito"
+   done
+   if [[ -z "$pkg" ]]; then
+     report_fail 'Tuta: installazione AUR non riuscita; consultare il log'; return 1
    fi
  fi
- if ! has_pkg "$pkg"; then
-   report_fail "Tuta: pacchetto non verificato dopo installazione ($pkg)"
-   return 1
- fi
- # I launcher nativi vengono gestiti da pacman/yay: non crearne duplicati.
  while IFS= read -r entry; do
    [[ "$entry" == /usr/share/applications/*.desktop && -f "$entry" ]] || continue
    desktop_id="${entry##*/}"
    break
  done < <(pacman -Qlq "$pkg" 2>/dev/null || true)
  if [[ -z "$desktop_id" ]]; then
-   report_warn "Tuta: $pkg installato ma launcher desktop non trovato; controllare pacman -Ql $pkg"
-   return 1
+   report_warn "Tuta: $pkg installato ma launcher non rilevato tramite pacman -Ql"
+ else
+   report_ok "Tuta desktop nativo: $pkg ($desktop_id)"
  fi
- # Rimuove solo il vecchio launcher generato da LEAN, mai quello nativo.
- if [[ -f "$legacy" && ! -L "$legacy" ]] && grep -q '^X-EndeavourOS-LEAN-Managed=true$' "$legacy"; then
+ if [[ -f "$legacy" && ! -L "$legacy" ]] && grep -qx 'X-EndeavourOS-LEAN-Managed=true' "$legacy"; then
    local backup_dir="$HOME/.local/share/endeavouros-lean/launcher-backups"
-   mkdir -p "$backup_dir"
-   mv -- "$legacy" "$backup_dir/lean-tuta-mail-$(date +%Y%m%d%H%M%S).desktop" || return 1
+   mkdir -p "$backup_dir" || return 1
+   mv -- "$legacy" "$backup_dir/lean-tuta-mail-$(date +%Y%m%d%H%M%S)-$$.desktop" || return 1
  fi
- if command -v kbuildsycoca6 >/dev/null 2>&1; then kbuildsycoca6 --noincremental >/dev/null 2>&1 || true; fi
- report_ok "Tuta desktop nativo pronto: $pkg ($desktop_id)"
+ command -v kbuildsycoca6 >/dev/null 2>&1 && kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
 }
 
 lean_google_office(){
+ lean_google_icons
  say 'Google Docs / Sheets / Slides / Drive: browser installato (Chromium > Firefox (Brave escluso))'
  local browser
  browser=$(lean_shortcut_browser || true)
@@ -599,7 +534,7 @@ lean_google_office(){
  mkdir -p "$dir"
  while IFS='|' read -r key title url icon; do
   local desktop="$dir/lean-google-${key}.desktop"
-  if [[ -e "$desktop" ]] && ! grep -q '^X-EndeavourOS-LEAN-Managed=true$' "$desktop" && ! grep -Eq '^Exec=(brave|brave-browser|chromium|chromium-browser|firefox) (--app=|--new-window )' "$desktop"; then
+  if [[ -e "$desktop" ]] && ! grep -q '^X-EndeavourOS-LEAN-Managed=true$' "$desktop"; then
     report_skip "Google $title: launcher personalizzato conservato"; continue
   fi
   cmd=$(lean_shortcut_exec "$browser" "$url")
@@ -611,7 +546,7 @@ Comment=Google Workspace online ($browser)
 Exec=$cmd
 Icon=$icon
 Terminal=false
-Categories=Office;Network;
+Categories=Office;
 X-EndeavourOS-LEAN-Managed=true
 EOFGO
   report_ok "Google $title: launcher KDE creato"
@@ -619,7 +554,7 @@ EOFGO
 docs|Docs|https://docs.google.com/document/|x-office-document
 sheets|Sheets|https://docs.google.com/spreadsheets/|x-office-spreadsheet
 slides|Slides|https://docs.google.com/presentation/|x-office-presentation
-drive|Drive|https://drive.google.com/|$HOME/.local/share/icons/endeavouros-lean/drive.svg
+drive|Drive|https://drive.google.com/|folder-remote
 GOOGLEOFFICE
  echo 'Google Docs Offline: estensione ufficiale Google Docs Offline destinata ai browser Chromium supportati, NON Firefox.'
  echo 'Firefox: Docs/Sheets/Slides funzionano online. Per lavoro offline utilizzare LibreOffice e sincronizzare manualmente al ritorno online.'
@@ -840,7 +775,7 @@ Name=$title
 Exec=$cmd
 Icon=$icondir/$key.svg
 Terminal=false
-Categories=Development;Network;
+Categories=Network;
 StartupNotify=true
 X-EndeavourOS-LEAN-Managed=true
 EOF
@@ -1317,7 +1252,12 @@ google_workspace(){
  local key name url cmd
  while IFS='|' read -r key name url; do
    cmd=$(lean_shortcut_exec "$browser" "$url")
-   cat > "$appdir/google-${key}.desktop" <<EOFGOOGLE
+   local file="$appdir/google-${key}.desktop"
+   if [[ -e "$file" ]] && ! grep -qx 'X-EndeavourOS-LEAN-Managed=true' "$file"; then
+     report_skip "Google $name: launcher personale conservato ($file)"
+     continue
+   fi
+   cat > "$file" <<EOFGOOGLE
 [Desktop Entry]
 Type=Application
 Name=$name
@@ -2529,7 +2469,6 @@ lean_guided(){
  echo '  [3/8] INTELLIGENZA ARTIFICIALE'
  run_step ai_tools
  run_step ollama_local
- run_step ai_desktop
  echo '  [4/8] SINCRONIZZAZIONE, CLOUD E DISPOSITIVI'
  run_step lean_syncthing
  run_step cloud
@@ -2542,8 +2481,6 @@ lean_guided(){
  run_step proton_vpn_setup
  echo '  [6/8] OFFICE, GOOGLE E PRODUTTIVITÀ'
  run_step lean_office_fonts
- run_step google_workspace
- run_step lean_google_office
  run_step lean_appflowy
  run_step lean_productivity_install
  run_step lean_family_setup
@@ -2561,7 +2498,7 @@ lean_guided(){
  run_step maintenance_audit
  run_step lean_safe_cleanup
  run_step lean_hardware_audit
- echo "KDE: nessuna pulizia automatica dei launcher durante installazione completa."
+ run_step lean_rebuild_web_shortcuts
  run_step lean_postinstall_review
  echo 'Fasi completate. Il report finale verrà mostrato alla chiusura del menu.'
 }
@@ -2828,24 +2765,22 @@ while true; do
  48) Firefox: configura privacy avanzata (senza reinstallare tutto)
  49) Font compatibilità Microsoft / LibreOffice
  50) Google Docs, Sheets, Slides, Drive (Firefox)
- 51) Tuta Mail (desktop se disponibile, altrimenti web)
+ 51) Tuta Mail (solo client desktop AUR, nessun fallback web)
  52) Audit hardware e pulizia conservativa
  53) AppFlowy: note, database e progetti (alternativa a Notion)
  54) Syncthing: installa, avvia e crea collegamento KDE
  55) Audit e pulizia sicura: dipendenze, orfani e cache
  56) GitHub: crea/verifica repository e sincronizza 4 file (script + 3 guide)
  57) OpenAI Codex CLI: installa/verifica (senza reinstallare la suite)
- 58) Audit browser, elimina shortcut web LEAN precedenti e ricreali (Chromium > Firefox)
+ 58) Backup launcher web LEAN marcati e ricostruzione (Chromium > Firefox)
  Nota: il rilevamento hardware avviene automaticamente prima di ogni operazione
 MENU
  read -r -p 'Scelta [B]: ' choice || break
  choice=${choice:-B}
  detect_hardware
  if [[ "$choice" != 0 ]]; then lean_browser_audit; fi
- if [[ "$HW_PROFILE" == unknown && "$choice" != 44 && "$choice" != 0 && "$choice" != 1 && "$choice" != 38 && "$choice" != 56 && "$choice" != 57 ]]; then
-   warn 'Hardware grafico non identificato: per sicurezza disponibili solo audit (1, 38, 44) o uscita (0).'
-   report_warn 'Azione bloccata: GPU sconosciuta'
-   continue
+ if [[ "$HW_PROFILE" == unknown ]]; then
+   echo '[INFO] GPU non riconosciuta: procedo senza forzare driver; il menu resta disponibile.'
  fi
  case "$choice" in
   [Bb]) lean_guided; break;;

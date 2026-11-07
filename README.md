@@ -342,3 +342,19 @@ Ad ogni ricostruzione (`B` o opzione `58`) lo script verifica Chromium/Firefox, 
 L'installazione di Tuta è integrata nella procedura completa `B` e nell'opzione `51`. Lo script controlla `tutanota-desktop-bin`, `tutanota-desktop` e `tuta-desktop`, installa tramite `yay` il pacchetto AUR disponibile se necessario, verifica il pacchetto e il launcher nativo, senza generare uno shortcut web o un doppione. Il vecchio `lean-tuta-mail.desktop` viene spostato in un backup soltanto se marcato come gestito da LEAN. Se l'installazione fallisce, viene riportato un errore esplicito.
 
 **Misura di sicurezza temporanea:** dopo i problemi riscontrati con il menu KDE, la ricostruzione automatica degli shortcut è disabilitata nel percorso `B`; l'opzione `58` resta separata e non va usata finché non viene validata su un laptop. La presenza di un file `.desktop` non garantisce il funzionamento effettivo dell'applicazione: verificarne l'avvio manualmente.
+
+
+## v63 — AppFlowy e KDE
+
+L'opzione 53 tenta `yay -S --needed appflowy-bin` dopo conferma `[S/n]`, senza bloccare l'installazione con un pre-controllo `yay -Si`. In caso di errore controllare il log. L'opzione 58 esegue backup dei soli launcher marcati LEAN e ricrea gli shortcut web una volta, con Chromium o Firefox, senza Brave. La procedura B ricostruisce gli shortcut una sola volta alla fine. Ferdium e Tuta restano nativi. Docs, Sheets, Slides e Drive sono soltanto in Office; AI e servizi di comunicazione soltanto in Internet. Gli shortcut personali e nativi non vengono cancellati.
+
+
+## Riparazione 2026-11-07
+
+- Opzione **51**: Tuta nativo via AUR, tentativo reale `yay -S --needed tutanota-desktop-bin` e fallback `tutanota-desktop`, verifica pacchetto e launcher. Nessun collegamento web Tuta.
+- Opzione **53**: AppFlowy tramite `yay -S --needed appflowy-bin`, dopo conferma; segnala eventuali errori.
+- Opzione **58**: ricrea ChatGPT, Claude, Gemini, Perplexity, Grok, Gmail, Calendar, Keep, Tasks, Google Docs, Sheets, Slides, Drive; Chromium preferito, Firefox fallback, mai Brave. Prima archivia soltanto launcher marcati LEAN.
+- Il menu non blocca più le opzioni se il rilevamento GPU restituisce `unknown`.
+- Nessun file `.desktop` personale viene sovrascritto dalla funzione Google Workspace.
+- Consiglio: testare prima 51, 53, 58 separatamente. Non eseguire `B` prima di averli verificati.
+- Questa build è stata verificata staticamente, **non** installata su un laptop reale.
