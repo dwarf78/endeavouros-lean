@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# EndeavourOS KDE - LEAN installer repaired 2026-11-07 (photo/video, Google, Ollama, iPhone diagnostics): vibe coding, Steam, Ledger/DeFi, PDF/OCR
+# EndeavourOS KDE - LEAN installer consolidated 2026-11-07 (photo/video, Google, Ollama, iPhone diagnostics): vibe coding, Steam, Ledger/DeFi, PDF/OCR
 # No automatic removal of personal data, drivers or desktop components.
 # AUR builds are untrusted; check PKGBUILD independently before execution.
 # Office: LibreOffice only. Installazioni automatiche; rimozioni con conferma.
@@ -135,7 +135,7 @@ report_final(){
  } | tee "$REPORT"
 }
 on_error(){ local rc=$?; report_fail "Errore non gestito (riga $1, codice $rc)"; return 0; }
-on_exit(){ local rc=$?; trap - EXIT; report_final "$rc"; kill "${SUDO_KEEPALIVE_PID:-}" 2>/dev/null || true; }
+on_exit(){ local rc=$?; trap - EXIT; if [[ "${LEAN_QUICK_EXIT:-0}" != 1 ]]; then report_final "$rc"; fi; kill "${SUDO_KEEPALIVE_PID:-}" 2>/dev/null || true; }
 trap 'on_error "$LINENO"' ERR
 trap on_exit EXIT
 
@@ -428,43 +428,50 @@ lean_browser_audit(){
 # Ripulisce esclusivamente i launcher web creati da LEAN o riconoscibili
 # come suoi vecchi collegamenti. Non tocca il menu KDE di sistema né le app native.
 lean_clean_web_shortcuts(){
- say 'KDE: archiviazione dei soli launcher marcati LEAN'
- local dir="$HOME/.local/share/applications" file count=0 backup
- [[ -d "$dir" ]] || return 0
- backup="$HOME/.local/share/endeavouros-lean/launcher-backup/$(date +%Y%m%d-%H%M%S)"
- for file in "$dir"/*.desktop; do
-   [[ -f "$file" && ! -L "$file" ]] || continue
-   if grep -qx 'X-EndeavourOS-LEAN-Managed=true' "$file"; then
-     mkdir -p "$backup"
-     mv -- "$file" "$backup/" || { report_fail "Impossibile archiviare $file"; return 1; }
-     count=$((count+1))
+ # Disabilitata: la vecchia routine archiviava tutti i launcher LEAN a ogni passaggio.
+ # I generatori aggiornano in loco soltanto i rispettivi file gestiti.
+ report_ok 'Launcher LEAN conservati: nessuna pulizia automatica'
+}
+
+lean_verify_web_shortcuts(){
+ local dir="$HOME/.local/share/applications" f n=0 failures=0
+ local -a expected=(
+  ai-chatgpt-ai ai-claude-ai ai-gemini-ai ai-grok-ai ai-perplexity-ai
+  google-calendar google-gmail google-keep google-tasks
+  lean-google-docs lean-google-drive lean-google-sheets lean-google-slides
+ )
+ for f in "${expected[@]}"; do
+   if [[ ! -f "$dir/$f.desktop" ]]; then
+     echo "[ERRORE] Manca $f.desktop"; failures=$((failures+1)); continue
    fi
+   if command -v desktop-file-validate >/dev/null 2>&1; then
+     if ! desktop-file-validate "$dir/$f.desktop"; then failures=$((failures+1)); fi
+   fi
+   n=$((n+1))
  done
- report_ok "Launcher LEAN archiviati: $count; backup $backup"
+ printf 'Shortcut verificati: %d/13; errori: %d\n' "$n" "$failures"
+ if (( failures > 0 || n != 13 )); then report_fail 'Verifica shortcut KDE non superata'; return 1; fi
+ report_ok '13 shortcut KDE verificati: 9 Internet e 4 Office'
 }
 
 lean_rebuild_web_shortcuts(){
- say 'KDE: audit browser -> pulizia LEAN -> shortcut unici -> cache menu'
+ say 'KDE: aggiornamento non distruttivo dei 13 collegamenti web'
  lean_browser_audit
  if ! lean_shortcut_browser >/dev/null 2>&1; then
-   report_warn 'Chromium/Firefox assenti: non cancello shortcut prima di poterli ricreare'
-   return 0
+   report_fail 'Chromium/Firefox assenti: shortcut non aggiornati'
+   return 1
  fi
- lean_clean_web_shortcuts
+ # Nessuna archiviazione/rimozione dei launcher esistenti.
  ai_desktop
  lean_google_office
  google_workspace
- # Ferdium usa il launcher nativo del pacchetto: mai un secondo .desktop.
+ lean_verify_web_shortcuts || return 1
  if command -v kbuildsycoca6 >/dev/null 2>&1; then
-   kbuildsycoca6 --noincremental >/dev/null 2>&1 || report_warn 'Cache KDE non aggiornata'
- elif command -v kbuildsycoca5 >/dev/null 2>&1; then
-   kbuildsycoca5 --noincremental >/dev/null 2>&1 || true
+   kbuildsycoca6 --noincremental || report_warn 'Cache KDE non aggiornata'
  fi
- report_ok "Shortcut KDE ricreati con $(lean_shortcut_browser)"
+ report_ok "Shortcut KDE aggiornati con $(lean_shortcut_browser)"
 }
 
-# Browser per launcher KDE: Chromium, poi Firefox. Non usare Brave, anche se installato.
-# Safari non esiste nativamente su EndeavourOS/Linux.
 lean_shortcut_browser(){
  local candidate
  for candidate in chromium chromium-browser firefox; do
@@ -2772,7 +2779,7 @@ while true; do
  55) Audit e pulizia sicura: dipendenze, orfani e cache
  56) GitHub: crea/verifica repository e sincronizza 4 file (script + 3 guide)
  57) OpenAI Codex CLI: installa/verifica (senza reinstallare la suite)
- 58) Backup launcher web LEAN marcati e ricostruzione (Chromium > Firefox)
+ 58) Verifica e aggiorna 13 launcher web senza cancellazioni (Chromium > Firefox)
  Nota: il rilevamento hardware avviene automaticamente prima di ogni operazione
 MENU
  read -r -p 'Scelta [B]: ' choice || break
@@ -2842,7 +2849,7 @@ MENU
   56) lean_github_repo;;
   57) install_repo nodejs npm; install_codex_cli;;
   58) lean_rebuild_web_shortcuts;;
-  0) break;;
+  0) LEAN_QUICK_EXIT=1; break;;
   *) echo 'Scelta non valida';;
  esac
 done

@@ -358,3 +358,11 @@ L'opzione 53 tenta `yay -S --needed appflowy-bin` dopo conferma `[S/n]`, senza b
 - Nessun file `.desktop` personale viene sovrascritto dalla funzione Google Workspace.
 - Consiglio: testare prima 51, 53, 58 separatamente. Non eseguire `B` prima di averli verificati.
 - Questa build è stata verificata staticamente, **non** installata su un laptop reale.
+
+
+## Consolidamento 2026-11-07
+- Opzione 58 non archivia e non elimina più alcun launcher. Aggiorna in loco 13 file gestiti, valida con desktop-file-validate e aggiorna la cache KDE.
+- Opzione 0 evita la stampa del report finale e termina il menu.
+- AppFlowy e Tuta: opzioni 53 e 51, se già installati non vengono reinstallati.
+- Attenzione: il resto dell'installer completo (inclusa B) NON è stato testato sul computer reale. Per adesso usare soltanto opzioni mirate.
+- Prima prova consigliata: 58, poi 0.
