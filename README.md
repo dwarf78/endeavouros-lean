@@ -335,3 +335,10 @@ Durante l'opzione **56** o il percorso **B**, lo script chiede dove salvare il c
 ## v61 — menu KDE senza duplicati
 
 Ad ogni ricostruzione (`B` o opzione `58`) lo script verifica Chromium/Firefox, rimuove **soltanto** i launcher gestiti da LEAN e quelli legacy riconosciuti, e ricrea un unico collegamento per servizio. Nomi puliti: ChatGPT, Claude, Gemini, Perplexity, Grok, Google Docs, Google Sheets, Google Slides, Google Drive, Google Calendar, Google Tasks, Gmail, Google Keep. Niente prefisso «Famiglia -». Docs/Sheets/Slides/Drive compaiono soltanto nella categoria **Office**; Gmail/Calendar/Tasks/Keep soltanto in **Internet**. Ferdium usa il launcher nativo, senza un duplicato LEAN. Le icone usano risorse SVG locali o icone del tema KDE. Gli shortcut personali e i launcher di sistema non vengono cancellati. I preferiti già fissati nel pannello Plasma possono richiedere rimozione e nuova aggiunta.
+
+
+## v62 — Tuta Desktop e protezione del menu KDE
+
+L'installazione di Tuta è integrata nella procedura completa `B` e nell'opzione `51`. Lo script controlla `tutanota-desktop-bin`, `tutanota-desktop` e `tuta-desktop`, installa tramite `yay` il pacchetto AUR disponibile se necessario, verifica il pacchetto e il launcher nativo, senza generare uno shortcut web o un doppione. Il vecchio `lean-tuta-mail.desktop` viene spostato in un backup soltanto se marcato come gestito da LEAN. Se l'installazione fallisce, viene riportato un errore esplicito.
+
+**Misura di sicurezza temporanea:** dopo i problemi riscontrati con il menu KDE, la ricostruzione automatica degli shortcut è disabilitata nel percorso `B`; l'opzione `58` resta separata e non va usata finché non viene validata su un laptop. La presenza di un file `.desktop` non garantisce il funzionamento effettivo dell'applicazione: verificarne l'avvio manualmente.

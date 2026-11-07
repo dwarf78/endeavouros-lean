@@ -510,7 +510,6 @@ lean_rebuild_web_shortcuts(){
  ai_desktop
  lean_google_office
  google_workspace
- lean_tuta_desktop
  # Ferdium usa il launcher nativo del pacchetto: mai un secondo .desktop.
  if command -v kbuildsycoca6 >/dev/null 2>&1; then
    kbuildsycoca6 --noincremental >/dev/null 2>&1 || report_warn 'Cache KDE non aggiornata'
@@ -541,87 +540,54 @@ lean_shortcut_exec(){
 }
 
 lean_tuta_desktop(){
- say 'Tuta Mail: priorità al client desktop nativo, Firefox solo come fallback'
- # Pacchetto AUR di terze parti: non installare senza revisione PKGBUILD.
- if has_pkg tutanota-desktop || has_pkg tuta-desktop; then
-   report_ok 'Tuta desktop già installato'
- elif has_repo tutanota-desktop; then
-   install_repo tutanota-desktop
- elif has_repo tuta-desktop; then
-   install_repo tuta-desktop
- else
-   if command -v yay >/dev/null 2>&1 && ask 'Tuta desktop non presente nei repository: vuoi esaminare e installare tutanota-desktop da AUR?'; then
-     echo 'Prima di procedere, verifica attentamente PKGBUILD e provenienza del pacchetto.'
-     yay -S --needed tutanota-desktop || report_warn 'Tuta AUR: installazione non riuscita; disponibile fallback Firefox'
-   else
-     report_skip 'Tuta desktop: pacchetto repo assente; disponibile fallback Firefox'
-   fi
- fi
-
- local desktop="$HOME/.local/share/applications/lean-tuta-mail.desktop"
- local native_exec='' native_icon='internet-mail' pkg entry desktop_id candidate
- mkdir -p "${desktop%/*}"
- # Preferire il launcher .desktop fornito dal pacchetto, che conosce l'eseguibile corretto.
- # Evitare il launcher LEAN stesso per non creare un ciclo gtk-launch.
- for pkg in tutanota-desktop tuta-desktop; do
-   if has_pkg "$pkg"; then
-     while IFS= read -r entry; do
-       [[ "$entry" == /usr/share/applications/*.desktop ]] || continue
-       [[ -f "$entry" ]] || continue
-       desktop_id="${entry##*/}"; desktop_id="${desktop_id%.desktop}"
-       [[ "$desktop_id" == lean-tuta-mail ]] && continue
-       if command -v gtk-launch >/dev/null 2>&1; then
-         native_exec="gtk-launch $desktop_id"
-         candidate=$(sed -n 's/^Icon=//p' "$entry" | head -n 1)
-         [[ -n "$candidate" ]] && native_icon="$candidate"
-         break
-       fi
-     done < <(pacman -Qlq "$pkg" 2>/dev/null || true)
-   fi
-   [[ -n "$native_exec" ]] && break
+ say 'Tuta Desktop: verifica client nativo e installazione AUR (nessuno shortcut web)'
+ local pkg='' candidate entry desktop_id='' legacy="$HOME/.local/share/applications/lean-tuta-mail.desktop"
+ # Non installare un secondo client quando uno è già presente.
+ for candidate in tutanota-desktop-bin tutanota-desktop tuta-desktop; do
+   if has_pkg "$candidate"; then pkg="$candidate"; break; fi
  done
- # Se manca gtk-launch o il pacchetto non fornisce un .desktop, verificare il binario.
- if [[ -z "$native_exec" ]]; then
-   for candidate in tutanota-desktop tuta-desktop; do
-     if command -v "$candidate" >/dev/null 2>&1; then
-       native_exec="$candidate"
-       break
-     fi
-   done
- fi
- if [[ -z "$native_exec" ]]; then
-   local shortcut_browser
-   shortcut_browser=$(lean_shortcut_browser || true)
-   if [[ -z "$shortcut_browser" ]]; then
-     report_warn 'Tuta: client nativo e browser assenti; launcher non creato'
-     return 0
+ if [[ -z "$pkg" ]]; then
+   if ! command -v yay >/dev/null 2>&1; then
+     report_fail 'Tuta: yay assente. Installa/configura yay prima di riprovare.'
+     return 1
    fi
-   native_exec=$(lean_shortcut_exec "$shortcut_browser" 'https://app.tuta.com/')
-   report_warn "Tuta: client nativo assente; launcher via $shortcut_browser"
- else
-   report_ok "Tuta: launcher KDE nativo ($native_exec)"
+   # Il pacchetto binario AUR viene preferito; nessun fallback web silenzioso.
+   if yay -Si tutanota-desktop-bin >/dev/null 2>&1; then
+     pkg=tutanota-desktop-bin
+   elif yay -Si tutanota-desktop >/dev/null 2>&1; then
+     pkg=tutanota-desktop
+   else
+     report_fail 'Tuta: pacchetto AUR non disponibile; nessun launcher fittizio creato'
+     return 1
+   fi
+   echo "Installazione Tuta da AUR: $pkg"
+   if ! yay -S --needed "$pkg"; then
+     report_fail "Tuta: installazione AUR fallita ($pkg)"
+     return 1
+   fi
  fi
-
- # Aggiornare il vecchio launcher LEAN Firefox, ma non sovrascrivere launcher personalizzati.
- if [[ -e "$desktop" ]] && ! grep -q '^X-EndeavourOS-LEAN-Managed=true$' "$desktop" && ! grep -Eq '^Exec=(brave|brave-browser|chromium|chromium-browser|firefox) (--app=|--new-window )https://app.tuta.com/?$' "$desktop"; then
-   report_skip "Tuta: launcher personalizzato conservato ($desktop)"
- else
-   cat > "$desktop" <<EOFTUTA
-[Desktop Entry]
-Type=Application
-Name=Tuta Mail
-Comment=Posta privata Tuta
-Exec=$native_exec
-Icon=$native_icon
-Terminal=false
-Categories=Network;Email;
-X-EndeavourOS-LEAN-Managed=true
-EOFTUTA
-   report_ok 'Launcher Tuta Mail aggiornato nel menu KDE'
+ if ! has_pkg "$pkg"; then
+   report_fail "Tuta: pacchetto non verificato dopo installazione ($pkg)"
+   return 1
  fi
- if command -v kbuildsycoca6 >/dev/null 2>&1; then
-   kbuildsycoca6 --noincremental >/dev/null 2>&1 || report_warn 'Tuta: cache KDE non aggiornata'
+ # I launcher nativi vengono gestiti da pacman/yay: non crearne duplicati.
+ while IFS= read -r entry; do
+   [[ "$entry" == /usr/share/applications/*.desktop && -f "$entry" ]] || continue
+   desktop_id="${entry##*/}"
+   break
+ done < <(pacman -Qlq "$pkg" 2>/dev/null || true)
+ if [[ -z "$desktop_id" ]]; then
+   report_warn "Tuta: $pkg installato ma launcher desktop non trovato; controllare pacman -Ql $pkg"
+   return 1
  fi
+ # Rimuove solo il vecchio launcher generato da LEAN, mai quello nativo.
+ if [[ -f "$legacy" && ! -L "$legacy" ]] && grep -q '^X-EndeavourOS-LEAN-Managed=true$' "$legacy"; then
+   local backup_dir="$HOME/.local/share/endeavouros-lean/launcher-backups"
+   mkdir -p "$backup_dir"
+   mv -- "$legacy" "$backup_dir/lean-tuta-mail-$(date +%Y%m%d%H%M%S).desktop" || return 1
+ fi
+ if command -v kbuildsycoca6 >/dev/null 2>&1; then kbuildsycoca6 --noincremental >/dev/null 2>&1 || true; fi
+ report_ok "Tuta desktop nativo pronto: $pkg ($desktop_id)"
 }
 
 lean_google_office(){
@@ -2526,7 +2492,7 @@ lean_guided(){
  run_step preflight
  run_step lean_browser_audit
  # La pulizia/ricreazione avviene prima delle installazioni; si ripete a fine percorso.
- run_step lean_rebuild_web_shortcuts
+ echo "KDE: ricostruzione automatica shortcut sospesa per sicurezza; usare opzione 58 solo dopo audit."
  detect_hardware
  echo 'FASE 2/6 — Audit pacchetti, servizi, hardware, alimentazione e Ledger (sola lettura)'
  run_step maintenance_audit
@@ -2595,7 +2561,7 @@ lean_guided(){
  run_step maintenance_audit
  run_step lean_safe_cleanup
  run_step lean_hardware_audit
- run_step lean_rebuild_web_shortcuts
+ echo "KDE: nessuna pulizia automatica dei launcher durante installazione completa."
  run_step lean_postinstall_review
  echo 'Fasi completate. Il report finale verrà mostrato alla chiusura del menu.'
 }
