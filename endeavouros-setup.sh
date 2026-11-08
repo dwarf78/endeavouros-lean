@@ -2783,6 +2783,86 @@ KALI_PROMPT
   report_ok 'Prompt Bash Kali-like configurato senza modificare Konsole/KDE'
 }
 
+# Optional Konsole profile: separate from the user's default profile and KDE menu.
+lean_kali_transparency(){
+  local profile_dir="$HOME/.local/share/konsole" profile="$HOME/.local/share/konsole/LEAN-Kali-Transparent.profile"
+  local scheme="$HOME/.local/share/konsole/LEAN-Kali-Transparent.colorscheme" backup stamp
+  if ! command -v konsole >/dev/null 2>&1; then
+    report_warn 'Konsole non installato: impossibile creare il profilo trasparente'
+    return 1
+  fi
+  echo 'Profilo separato LEAN Kali Transparent: sfondo scuro, opacità 85% (15% trasparenza).'
+  echo 'Non cambia il profilo predefinito, KMenuEdit, i launcher o le impostazioni globali KDE.'
+  echo 'La trasparenza richiede il compositore KDE attivo; la sfocatura dipende dalle impostazioni Plasma.'
+  if ! ask_explicit 'Creare/aggiornare il profilo Konsole trasparente?'; then
+    report_skip 'Profilo Konsole trasparente non autorizzato'; return 0
+  fi
+  mkdir -p "$profile_dir" || return 1
+  stamp=$(date +%Y%m%d-%H%M%S)
+  for backup in "$profile" "$scheme"; do
+    if [[ -e "$backup" ]]; then
+      cp -a -- "$backup" "${backup}.lean-backup-${stamp}" || return 1
+    fi
+  done
+  cat > "$scheme" <<'KALI_SCHEME'
+[General]
+Description=LEAN Kali Transparent
+Opacity=0.85
+
+[Background]
+Color=16,23,34
+
+[Foreground]
+Color=222,231,241
+
+[Color0]
+Color=16,23,34
+[Color0Intense]
+Color=76,88,105
+[Color1]
+Color=226,92,100
+[Color1Intense]
+Color=255,120,129
+[Color2]
+Color=91,214,160
+[Color2Intense]
+Color=133,237,189
+[Color3]
+Color=229,193,107
+[Color3Intense]
+Color=247,214,139
+[Color4]
+Color=125,181,255
+[Color4Intense]
+Color=161,205,255
+[Color5]
+Color=191,144,246
+[Color5Intense]
+Color=214,183,255
+[Color6]
+Color=94,202,221
+[Color6Intense]
+Color=136,227,242
+[Color7]
+Color=210,219,231
+[Color7Intense]
+Color=245,248,252
+KALI_SCHEME
+  cat > "$profile" <<'KALI_PROFILE'
+[General]
+Name=LEAN Kali Transparent
+Parent=FALLBACK/
+
+[Appearance]
+ColorScheme=LEAN-Kali-Transparent
+KALI_PROFILE
+  echo '[OK] Profilo Konsole LEAN Kali Transparent creato.'
+  echo 'Per provarlo: konsole --profile "LEAN Kali Transparent"'
+  echo 'Per impostarlo come predefinito: Konsole > Impostazioni > Gestisci profili (scelta manuale).'
+  echo 'Per tornare indietro: usa il tuo precedente profilo; i file esistenti non sono modificati.'
+  report_ok 'Profilo Konsole trasparente separato creato'
+}
+
 lean_guided(){
  RUN_MODE='B — profilo hardware adattivo, conferme esplicite'
  say 'LEAN — installazione guidata sicura (profilo adattivo al PC rilevato)'
@@ -2827,6 +2907,9 @@ lean_guided(){
  fi
  if ask_explicit 'Personalizzare anche il prompt Bash di Konsole in stile Kali Linux?'; then
    lean_kali_terminal || report_warn 'Personalizzazione terminale non completata'
+ fi
+ if ask_explicit 'Creare anche il profilo Konsole Kali con sfondo trasparente?'; then
+   lean_kali_transparency || report_warn 'Profilo Konsole trasparente non completato'
  fi
  echo 'FASE 4 — verifica finale (sola lettura)'
  lean_postinstall_review || report_warn 'Audit finale con avvisi'
@@ -3078,7 +3161,7 @@ declare -a MENU_1=(
  'Inventario e migrazione installazioni esterne: Flatpak, Snap, AppImage, npm|1|migration'
  'Manutenzione: dipendenze, orfani protetti, cache pacman, SSD/TRIM (con conferma)|1|maintenance_audit lean_safe_cleanup lean_ssd_maintenance'
  'Monitoraggio hardware (btop, nvtop, sensori, SMART) + audit profili energetici|1|lean_monitoring_install lean_power_audit'
- 'Aspetto desktop: font open source stile macOS, pulsanti finestra a sinistra, prompt Bash stile Kali (con conferma e backup)|1|macos_desktop_look lean_kali_terminal'
+ 'Aspetto desktop: font stile macOS, pulsanti finestra a sinistra, prompt Bash e profilo Konsole stile Kali (ognuno con conferma e backup)|1|macos_desktop_look lean_kali_terminal lean_kali_transparency'
 )
 declare -a MENU_2=(
  'Suite base: LibreOffice (+ GTK3 multi-monitor), Calibre, Bitwarden, font compatibili MS|1|base_apps'
