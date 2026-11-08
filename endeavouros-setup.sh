@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# EndeavourOS KDE - LEAN installer consolidated 2026-11-07 (photo/video, Google, Ollama, iPhone diagnostics): vibe coding, Steam, Ledger/DeFi, PDF/OCR
+# EndeavourOS / Arch KDE - LEAN hardware-agnostic 2026-11-08
+# Menu a 8 categorie (max 6 voci ciascuna) + percorso guidato B.
+# Nessun modello di laptop presupposto: GPU Intel/NVIDIA/AMD (anche ibride) rilevate a ogni operazione.
 # No automatic removal of personal data, drivers or desktop components.
 # AUR builds are untrusted; check PKGBUILD independently before execution.
 # Office: LibreOffice only. Installazioni automatiche; rimozioni con conferma.
@@ -7,7 +9,8 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 if [[ $EUID -eq 0 ]]; then echo 'Esegui come utente normale, non con sudo.'; exit 1; fi
-command -v pacman >/dev/null || { echo 'Richiesto Arch/EndeavourOS con pacman.'; exit 1; }
+command -v pacman >/dev/null || { echo 'Richiesta una distribuzione basata su Arch (EndeavourOS, Arch, CachyOS, Manjaro, Garuda...) con pacman.'; exit 1; }
+LEAN_DISTRO=$( . /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-Arch-based}" )
 
 
 # Rilevamento hardware senza installare driver e senza interrogare Internet.
@@ -16,6 +19,8 @@ HW_PROFILE=unknown
 HAS_INTEL_GPU=0
 HAS_NVIDIA_GPU=0
 HAS_AMD_GPU=0
+HAS_DGPU=0
+HAS_IGPU=0
 HW_MODEL=unknown
 detect_hardware(){
  local dev vendor class
@@ -33,8 +38,13 @@ detect_hardware(){
  if [[ -r /sys/class/dmi/id/product_name ]]; then
    HW_MODEL=$(< /sys/class/dmi/id/product_name)
  fi
- if (( HAS_NVIDIA_GPU && HAS_INTEL_GPU )); then HW_PROFILE=intel-nvidia
+ # GPU dedicata: NVIDIA (qualsiasi iGPU) oppure AMD affiancata a Intel. GPU integrata: Intel, oppure AMD accanto a NVIDIA.
+ HAS_DGPU=0; HAS_IGPU=0
+ if (( HAS_NVIDIA_GPU )) || (( HAS_AMD_GPU && HAS_INTEL_GPU )); then HAS_DGPU=1; fi
+ if (( HAS_INTEL_GPU )) || (( HAS_AMD_GPU && HAS_NVIDIA_GPU )); then HAS_IGPU=1; fi
+ if (( HAS_NVIDIA_GPU && (HAS_INTEL_GPU || HAS_AMD_GPU) )); then HW_PROFILE=hybrid-nvidia
  elif (( HAS_NVIDIA_GPU )); then HW_PROFILE=nvidia
+ elif (( HAS_AMD_GPU && HAS_INTEL_GPU )); then HW_PROFILE=hybrid-amd
  elif (( HAS_INTEL_GPU )); then HW_PROFILE=intel
  elif (( HAS_AMD_GPU )); then HW_PROFILE=amd
  else HW_PROFILE=unknown
@@ -44,8 +54,16 @@ detect_hardware(){
 }
 detect_hardware
 
-LOG="$HOME/installer-endeavouros-lean-$(date +%Y%m%d-%H%M%S).log"
+# Log e report in una cartella dedicata (mai nella radice della HOME).
+# Sovrascrivibile con LEAN_LOG_DIR=/percorso prima di avviare lo script.
+LEAN_LOG_DIR="${LEAN_LOG_DIR:-$HOME/EndeavourOS-LEAN/log}"
+if ! mkdir -p -- "$LEAN_LOG_DIR" || [[ ! -w "$LEAN_LOG_DIR" ]]; then
+  echo "Impossibile creare o scrivere la cartella log: $LEAN_LOG_DIR"; exit 1
+fi
+chmod 700 -- "$LEAN_LOG_DIR" 2>/dev/null || true
+LOG="$LEAN_LOG_DIR/installer-$(date +%Y%m%d-%H%M%S).log"
 exec > >(tee -a "$LOG") 2>&1
+echo "Cartella log e report: $LEAN_LOG_DIR"
 # Report strutturato: salvato anche in caso di interruzione o errore.
 REPORT="${LOG%.log}-riepilogo.txt"
 RUN_STARTED=$(date '+%Y-%m-%d %H:%M:%S')
@@ -139,10 +157,8 @@ on_exit(){ local rc=$?; trap - EXIT; if [[ "${LEAN_QUICK_EXIT:-0}" != 1 ]]; then
 trap 'on_error "$LINENO"' ERR
 trap on_exit EXIT
 
-# Una richiesta password sudo all'avvio; rinnovo ticket finche lo script e' attivo.
-sudo -v || exit 1
-( while true; do sudo -n -v 2>/dev/null || exit; sleep 45; done ) &
-SUDO_KEEPALIVE_PID=$!
+# Sudo viene richiesto solo quando una funzione modifica il sistema.
+# Nessun keepalive o password per il menu, audit, preflight e uscita rapida.
 
 
 say(){ printf '\n\033[1;36m%s\033[0m\n' "$*"; }
@@ -193,10 +209,16 @@ install_fallback(){ local candidate="$1" aur="${2:-$1}"
 
 updated=0
 update_system(){
- say 'Aggiornamento completo Arch (no partial upgrades)'
- warn 'Un aggiornamento Arch puo aggiornare anche i pacchetti NVIDIA gia installati. Non li riconfiguro, ma pacman puo aggiornarli.'
- sudo -n pacman -Syu --noconfirm
+ say 'Aggiornamento completo Arch: conferma esplicita'
+ warn 'pacman -Syu può aggiornare kernel, driver grafici, firmware e desktop; nessun pacchetto viene bloccato artificialmente.'
+ if ! ask_explicit 'Autorizzi ORA pacman -Syu (inclusi eventuali driver/kernel)?'; then
+   report_skip 'Aggiornamento non autorizzato: nessuna modifica'; return 2
+ fi
+ if ! sudo -n pacman -Syu --noconfirm; then
+   report_fail 'Aggiornamento pacman -Syu fallito'; return 1
+ fi
  updated=1
+ report_ok 'Aggiornamento pacman -Syu completato'
 }
 
 migration(){
@@ -232,7 +254,7 @@ migration(){
 
 steam_setup(){
  say 'Steam / DualShock 4 / Gaming'
- if [[ $updated -ne 1 ]]; then warn 'Prima esegui la sezione 1: aggiornamento completo; Steam non installato.'; return; fi
+ if [[ $updated -ne 1 ]]; then warn 'Per installare o aggiornare Steam esegui prima Sistema e manutenzione > Aggiornamento completo nella stessa sessione. Nessuna modifica.'; report_skip 'Steam: aggiornamento completo non autorizzato nella sessione'; return 0; fi
  if ! grep -Eq '^\[multilib\]' /etc/pacman.conf; then
    warn 'Repository [multilib] non abilitato. Non modifico automaticamente pacman.conf.'
    echo 'Abilita [multilib] manualmente, esegui sudo pacman -Syu e riprova.'
@@ -256,13 +278,11 @@ steam_setup(){
      report_warn 'NVIDIA: driver da verificare manualmente'
    fi
    if has_pkg nvidia-utils; then gpu_pkgs+=(nvidia-prime); fi
- elif (( HAS_INTEL_GPU )); then
-   gpu_pkgs+=(vulkan-intel lib32-vulkan-intel)
-   echo 'Intel integrata: installazione stack Mesa/Vulkan Intel; niente pacchetti NVIDIA.'
- elif (( HAS_AMD_GPU )); then
-   gpu_pkgs+=(vulkan-radeon lib32-vulkan-radeon)
-   echo 'AMD: installazione stack Mesa/Vulkan Radeon; niente pacchetti NVIDIA.'
- else
+ fi
+ # Stack Mesa/Vulkan per OGNI GPU rilevata (valido anche per configurazioni ibride Intel+AMD o AMD+NVIDIA).
+ if (( HAS_INTEL_GPU )); then gpu_pkgs+=(vulkan-intel lib32-vulkan-intel); echo 'Intel: stack Mesa/Vulkan Intel.'; fi
+ if (( HAS_AMD_GPU )); then gpu_pkgs+=(vulkan-radeon lib32-vulkan-radeon); echo 'AMD: stack Mesa/Vulkan Radeon.'; fi
+ if (( ! HAS_INTEL_GPU && ! HAS_AMD_GPU && ! HAS_NVIDIA_GPU )); then
    warn 'GPU non identificata: installazione stack grafico specifico sospesa.'
  fi
  install_repo "${gpu_pkgs[@]}"
@@ -276,6 +296,7 @@ steam_setup(){
  echo 'Steam > Impostazioni > Controller: abilita Steam Input per controller PlayStation dove necessario.'
  echo 'Steam > Impostazioni > Compatibilita: abilita Proton per i giochi Windows.'
  if (( HAS_NVIDIA_GPU )); then echo 'Per usare NVIDIA in Steam: prime-run %command% (se disponibile).'; fi
+ if (( HAS_AMD_GPU && HAS_INTEL_GPU )); then echo 'Per usare la GPU AMD dedicata in Steam: DRI_PRIME=1 %command%.'; fi
  echo 'Proton GE e MangoHud sono OPZIONALI: installali solo se servono, non come dipendenze obbligatorie.'
  install_repo mangohud lib32-mangohud gamemode lib32-gamemode
  install_fallback protonup-qt
@@ -308,7 +329,7 @@ remove_onlyoffice(){
  fi
  echo 'Configurazioni e documenti personali non vengono eliminati dallo script.'
 }
-# LibreOffice: GTK3 risolve lo scaling misto eDP-1 100% / DP-1 145%.
+# LibreOffice: GTK3 risolve lo scaling misto su configurazioni multi-monitor con DPI diversi.
 # Crea override dei launcher solo per LibreOffice, senza alterare KDE o Qt globali.
 lean_libreoffice_gtk3(){
  say 'LibreOffice: backend GTK3 per configurazione multi-monitor KDE Wayland'
@@ -396,7 +417,7 @@ lean_appflowy_report(){
  if has_pkg appflowy-bin || has_pkg appflowy; then
    echo '  [OK] Pacchetto AppFlowy installato'
  else
-   echo '  [DA FARE] AppFlowy non installato: voce 53 (pacman, poi AUR con consenso)'
+   echo '  [DA FARE] AppFlowy non installato: Ufficio e produttività > AppFlowy (AUR con consenso)'
  fi
  echo '  [INFO] Nessun dato AppFlowy esistente viene eliminato'
 }
@@ -433,15 +454,35 @@ lean_clean_web_shortcuts(){
  report_ok 'Launcher LEAN conservati: nessuna pulizia automatica'
 }
 
+# KMenuEdit puo' includere/escludere esplicitamente vecchi launcher.
+# Non alterare mai automaticamente il menu personalizzato: avvisa e mostra
+# la diagnostica, cosi' le categorie restano sotto controllo dell'utente.
+lean_kde_menu_diagnostic(){
+ local menu="$HOME/.config/menus/applications-kmenuedit.menu"
+ [[ -f "$menu" ]] || return 0
+ if grep -Eqi '(<Filename>(ai-gemini-ai|Gemini|lean-google-drive)\.desktop</Filename>)' "$menu"; then
+   warn 'Menu KDE personalizzato: possibili regole Include/Exclude su Gemini/Drive.'
+   echo "  [INFO] Non modifico $menu"
+   echo '  [INFO] Se il menu nasconde un launcher, controlla con: grep -ni -C 4 -i gemini ~/.config/menus/applications-kmenuedit.menu'
+   report_warn 'KMenuEdit: verificare eventuali regole personalizzate di esclusione/inclusione'
+ fi
+}
+
 lean_verify_web_shortcuts(){
  local dir="$HOME/.local/share/applications" f n=0 failures=0
  local -a expected=(
-  ai-chatgpt-ai ai-claude-ai ai-gemini-ai ai-grok-ai ai-perplexity-ai
+  ai-chatgpt-ai ai-claude-ai ai-gemini-ai ai-grok-ai ai-perplexity-ai ai-ollama-ai
+  ai-copilot-ai ai-manus-ai ai-mistral-ai
   google-calendar google-gmail google-keep google-tasks
   lean-google-docs lean-google-drive lean-google-sheets lean-google-slides
  )
  for f in "${expected[@]}"; do
    if [[ ! -f "$dir/$f.desktop" ]]; then
+     if [[ "$f" == ai-gemini-ai && -f "$dir/Gemini.desktop" ]]; then
+       echo '[INFO] Gemini personalizzato presente: Gemini.desktop'
+       n=$((n+1))
+       continue
+     fi
      echo "[ERRORE] Manca $f.desktop"; failures=$((failures+1)); continue
    fi
    if command -v desktop-file-validate >/dev/null 2>&1; then
@@ -449,13 +490,50 @@ lean_verify_web_shortcuts(){
    fi
    n=$((n+1))
  done
- printf 'Shortcut verificati: %d/13; errori: %d\n' "$n" "$failures"
- if (( failures > 0 || n != 13 )); then report_fail 'Verifica shortcut KDE non superata'; return 1; fi
- report_ok '13 shortcut KDE verificati: 9 Internet e 4 Office'
+ printf 'Shortcut verificati: %d/17; errori: %d\n' "$n" "$failures"
+ if (( failures > 0 || n != 17 )); then report_fail 'Verifica shortcut KDE non superata'; return 1; fi
+ report_ok '17 shortcut KDE verificati: 9 LLM, 4 Google Internet e 4 Office'
+}
+
+# Migrazione opzionale dei vecchi launcher Gemini web (mai eliminati).
+# Il nome del file puo' essere arbitrario; la URL identifica il collegamento web.
+lean_gemini_legacy_migration(){
+ local appdir="$HOME/.local/share/applications" file basename backup_dir moved=0
+ local managed="$appdir/ai-gemini-ai.desktop"
+ backup_dir="$HOME/.local/share/endeavouros-lean/backups/gemini-$(date +%Y%m%d-%H%M%S)"
+ while IFS= read -r -d '' file; do
+   [[ "$file" == "$managed" ]] && continue
+   # Non toccare Gemini CLI, altri programmi o launcher senza URL web di Gemini.
+   if ! grep -Eq '^(Exec|URL)=.*(https?://)?gemini\.google\.com([/ ?]|$)' "$file"; then continue; fi
+   basename=${file##*/}
+   echo "[DUPLICATO] $file"
+   grep -E '^(Name|Exec|Categories)=' "$file" || true
+   if ask_explicit "Archiviare questo vecchio launcher Gemini (backup, non cancellazione)?"; then
+     mkdir -p "$backup_dir"
+     if [[ -e "$backup_dir/$basename" ]]; then
+       warn "Backup già presente: $backup_dir/$basename; nessuna modifica"
+       continue
+     fi
+     mv -- "$file" "$backup_dir/$basename"
+     echo "[BACKUP] $backup_dir/$basename"
+     moved=$((moved+1))
+   else
+     warn "Conservato: $file; Gemini potrebbe ancora comparire in Internet"
+   fi
+ done < <(find "$appdir" -maxdepth 1 -type f -name '*.desktop' -print0 2>/dev/null)
+ if (( moved > 0 )); then
+   report_ok "Gemini: $moved vecchi launcher web archiviati in $backup_dir"
+ else
+   echo '[INFO] Nessun vecchio launcher Gemini spostato.'
+ fi
+ # Menu KMenuEdit: mai modificato automaticamente.
+ if [[ -f "$HOME/.config/menus/applications-kmenuedit.menu" ]]; then
+   echo '[INFO] Menu KMenuEdit personalizzato presente: potrebbe mantenere una voce Gemini in Internet.'
+ fi
 }
 
 lean_rebuild_web_shortcuts(){
- say 'KDE: aggiornamento non distruttivo dei 13 collegamenti web'
+ say 'KDE: aggiornamento non distruttivo dei 17 collegamenti web'
  lean_browser_audit
  if ! lean_shortcut_browser >/dev/null 2>&1; then
    report_fail 'Chromium/Firefox assenti: shortcut non aggiornati'
@@ -466,6 +544,16 @@ lean_rebuild_web_shortcuts(){
  lean_google_office
  google_workspace
  lean_verify_web_shortcuts || return 1
+ lean_gemini_menu_audit
+ echo "[PRESERVATO] Nessuna migrazione/archiviazione dei launcher Gemini"
+ lean_kde_menu_diagnostic
+ # Non cancellare o rinominare launcher preesistenti: segnala i potenziali duplicati.
+ local old
+ for old in "$HOME"/.local/share/applications/lean-web-{chatgpt,claude,gemini,perplexity,grok,copilot,manus,mistral,ollama}.desktop; do
+   if [[ -f "$old" ]]; then
+     warn "Possibile duplicato storico conservato: $old (verificare manualmente con KMenuEdit)"
+   fi
+ done
  if command -v kbuildsycoca6 >/dev/null 2>&1; then
    kbuildsycoca6 --noincremental || report_warn 'Cache KDE non aggiornata'
  fi
@@ -545,6 +633,7 @@ lean_google_office(){
     report_skip "Google $title: launcher personalizzato conservato"; continue
   fi
   cmd=$(lean_shortcut_exec "$browser" "$url")
+  if [[ "$key" == drive ]]; then icon="$HOME/.local/share/icons/endeavouros-lean/drive.svg"; fi
   cat > "$desktop" <<EOFGO
 [Desktop Entry]
 Type=Application
@@ -578,7 +667,7 @@ lean_postinstall_review(){
   pacman -Qdtq 2>/dev/null || true
  fi
  if command -v paccache >/dev/null; then
-  echo 'Cache pacman: pulizia conservativa tramite funzione esistente';
+  echo 'Cache pacman: nessuna pulizia eseguita; usa Sistema e manutenzione > Manutenzione per pulizia con conferma';
  else report_skip 'paccache assente: installare pacman-contrib se necessario'; fi
  report_ok "Audit hardware post-installazione: $HW_MODEL ($HW_PROFILE)"
 }
@@ -693,6 +782,34 @@ ai_tools(){
  install_fallback gemini-cli gemini-cli
  echo 'Non installo npm -g, curl|bash o installer terzi. Login/API key da configurare separatamente.'
 }
+lean_gemini_cli(){
+ say 'Google Gemini CLI: installazione o verifica pacman/yay'
+ if command -v gemini >/dev/null 2>&1; then
+   echo "[OK] Gemini CLI già presente: $(command -v gemini)"
+   gemini --version || report_warn 'Gemini CLI presente ma versione non verificabile'
+   report_ok 'Gemini CLI già installato'
+   return 0
+ fi
+ if ! has_pkg gemini-cli && ! has_repo gemini-cli && ! command -v yay >/dev/null 2>&1; then
+   report_warn 'Gemini CLI non disponibile: pacman/yay assenti o pacchetto non trovato'
+   return 0
+ fi
+ echo 'Gemini CLI è un client distinto dal collegamento web Gemini.'
+ echo 'L’installazione può richiedere download e compilazione da AUR.'
+ if ! ask_explicit 'Installare Gemini CLI ora?'; then
+   report_skip 'Gemini CLI: installazione non autorizzata'
+   return 0
+ fi
+ install_fallback gemini-cli gemini-cli
+ if command -v gemini >/dev/null 2>&1; then
+   gemini --version || true
+   report_ok 'Gemini CLI disponibile; autenticazione da completare al primo avvio'
+   echo 'Avvio: gemini'
+ else
+   report_warn 'Gemini CLI non disponibile dopo tentativo: verificare repository/AUR'
+ fi
+}
+
 lean_ai_icons(){
  local dir="$HOME/.local/share/icons/endeavouros-lean"
  mkdir -p "$dir"
@@ -706,10 +823,22 @@ SVG
  cat > "$dir/gemini.svg" <<'SVG'
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1c78eb"/><stop offset=".55" stop-color="#8b5cf6"/><stop offset="1" stop-color="#e06db5"/></linearGradient></defs><rect width="64" height="64" rx="14" fill="#fff"/><path d="M32 7c3 15 10 22 25 25-15 3-22 10-25 25-3-15-10-22-25-25C22 29 29 22 32 7Z" fill="url(#g)"/></svg>
 SVG
+ cat > "$dir/ollama.svg" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#242424"/><path d="M14 46V25c0-10 8-17 18-17s18 7 18 17v21" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/><circle cx="25" cy="29" r="3" fill="#fff"/><circle cx="39" cy="29" r="3" fill="#fff"/><path d="M26 39q6 5 12 0" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/></svg>
+SVG
  cat > "$dir/perplexity.svg" <<'SVG'
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#102c34"/><g fill="none" stroke="#48c7c4" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 19h30v28H17zM17 19l15-10 15 10M17 19l15 17 15-17M32 9v46M17 47l15-11 15 11M10 29h7m30 0h7"/></g></svg>
 SVG
- cat > "$dir/grok.svg" <<'SVG'
+ cat > "$dir/copilot.svg" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="c" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#12a5f4"/><stop offset=".55" stop-color="#6656df"/><stop offset="1" stop-color="#f29c54"/></linearGradient></defs><rect width="64" height="64" rx="14" fill="#111827"/><path d="M13 38c0-14 10-25 23-25 10 0 18 7 18 16 0 11-9 21-21 21H18c-4 0-6-5-5-12Zm11-1c5 3 10 3 15 0" fill="none" stroke="url(#c)" stroke-width="9" stroke-linecap="round"/></svg>
+SVG
+ cat > "$dir/manus.svg" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#101828"/><path d="M13 47V17l19 22 19-22v30" fill="none" stroke="#fff" stroke-width="7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="32" cy="17" r="4" fill="#8fd5ff"/></svg>
+SVG
+ cat > "$dir/mistral.svg" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#fff8ef"/><path fill="#f15a24" d="M10 15h12v8h7v8h6v-8h7v-8h12v34H42V37h-7v7h-6v-7h-7v12H10z"/></svg>
+SVG
+ cat > "$dir/grok.svg" <<'SVG' 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#141414"/><g fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M46 15 18 43M18 20h20v20H18z"/><path d="M38 40 49 51"/></g></svg>
 SVG
  echo "[OK] Icone AI create in $dir"
@@ -741,7 +870,7 @@ lean_firefox_replace_brave(){
      report_skip "Brave $pkg: necessario per altri pacchetti ($req)"
    else
      say "Brave $pkg non è richiesto da altri pacchetti: rimozione senza -Rns (nessuna pulizia ricorsiva)."
-     if sudo -n pacman -R --noconfirm "$pkg"; then
+     if ask_explicit "Rimuovere davvero $pkg? Profili e dati resteranno sul disco" && sudo -n pacman -R --noconfirm "$pkg"; then
        report_ok "Brave $pkg rimosso; profili personali conservati"
      else
        warn "Rimozione $pkg non riuscita: nessuna forzatura."
@@ -754,6 +883,50 @@ lean_firefox_replace_brave(){
    report_warn 'Brave Flatpak: rimozione manuale eventuale'
  fi
  report_ok 'Firefox: browser scelto per i launcher LEAN'
+}
+
+lean_llm_kde_submenu(){
+ # La struttura creata manualmente in KMenuEdit ha precedenza.
+ if [[ -f "$HOME/.config/menus/applications-kmenuedit.menu" ]]; then
+   echo '[PRESERVATO] Menu KMenuEdit attivo: nessun sottomenu LLM aggiuntivo generato.'
+   return 0
+ fi
+ # Menu KDE separato, senza modificare applications-kmenuedit.menu.
+ local menu_dir="$HOME/.config/menus/applications-merged"
+ local directory_dir="$HOME/.local/share/desktop-directories"
+ mkdir -p "$menu_dir" "$directory_dir"
+ local menu="$menu_dir/endeavouros-lean-llm.menu"
+ local dirfile="$directory_dir/endeavouros-lean-llm.directory"
+ # Non sovrascrivere file con lo stesso nome se non gestiti da LEAN.
+ if [[ -f "$menu" ]] && ! grep -q 'EndeavourOS-LEAN-Managed' "$menu"; then
+   warn "Menu personalizzato non gestito: $menu"; return 1
+ fi
+ if [[ -f "$dirfile" ]] && ! grep -q '^X-EndeavourOS-LEAN-Managed=true$' "$dirfile"; then
+   warn "Directory KDE personalizzata non gestita: $dirfile"; return 1
+ fi
+ cat > "$dirfile" <<'DIRECTORY'
+[Desktop Entry]
+Type=Directory
+Name=Intelligenza Artificiale
+Comment=LLM cloud e locali
+Icon=applications-science
+X-EndeavourOS-LEAN-Managed=true
+DIRECTORY
+ cat > "$menu" <<'MENUXML'
+<!DOCTYPE Menu PUBLIC "-//freedesktop//DTD Menu 1.0//EN" "http://www.freedesktop.org/standards/menu-spec/menu-1.0.dtd">
+<!-- EndeavourOS-LEAN-Managed: KDE AI submenu -->
+<Menu>
+ <Name>Applications</Name>
+ <Menu>
+  <Name>EndeavourOS-LEAN-LLM</Name>
+  <Directory>endeavouros-lean-llm.directory</Directory>
+  <Include><Category>X-EndeavourOS-LEAN-LLM</Category></Include>
+  <Layout><Merge type="menus"/><Merge type="files"/></Layout>
+ </Menu>
+</Menu>
+MENUXML
+ if command -v kbuildsycoca6 >/dev/null 2>&1; then kbuildsycoca6 --noincremental >/dev/null 2>&1 || true; fi
+ echo '[OK] Sottomenu KDE: Intelligenza Artificiale (9 LLM, cloud + Open WebUI)'
 }
 
 ai_desktop(){
@@ -769,6 +942,12 @@ ai_desktop(){
  while IFS='|' read -r key title url; do
    [[ -n "$key" ]] || continue
    file="$appdir/ai-${key}-ai.desktop"
+   # Gemini e' stato personalizzato in KMenuEdit: non sovrascriverlo MAI.
+   # Questo vale anche per file creati in passato da LEAN.
+   if [[ "$key" == gemini && ( -f "$file" || -f "$appdir/Gemini.desktop" ) ]]; then
+     echo "[PRESERVATO] Gemini esistente e menu KMenuEdit: $file"
+     continue
+   fi
    # Protegge launcher personalizzati; aggiorna solo quelli precedentemente creati dallo script.
    if [[ -f "$file" ]] && ! grep -q '^X-EndeavourOS-LEAN-Managed=true$' "$file" && ! grep -Eq -- "^Exec=(brave|brave-browser|chromium|chromium-browser|firefox) (\-\-app=|\-\-new-window )$url$" "$file"; then
      warn "Launcher personalizzato: $file (non modificato)"
@@ -782,7 +961,7 @@ Name=$title
 Exec=$cmd
 Icon=$icondir/$key.svg
 Terminal=false
-Categories=Network;
+Categories=X-EndeavourOS-LEAN-LLM;
 StartupNotify=true
 X-EndeavourOS-LEAN-Managed=true
 EOF
@@ -791,10 +970,31 @@ EOF
 chatgpt|ChatGPT|https://chatgpt.com
 claude|Claude|https://claude.ai
 gemini|Gemini|https://gemini.google.com
+ollama|Ollama (Open WebUI)|http://127.0.0.1:8080
 perplexity|Perplexity|https://www.perplexity.ai
+copilot|Microsoft Copilot|https://copilot.microsoft.com
+manus|Manus AI|https://manus.im
+mistral|Mistral Le Chat|https://chat.mistral.ai
 grok|Grok|https://grok.com
 AI_APPS
- if command -v kbuildsycoca6 >/dev/null 2>&1; then kbuildsycoca6 >/dev/null 2>&1 || true; fi
+ lean_llm_kde_submenu || warn "Sottomenu LLM non creato"
+ lean_gemini_menu_audit
+ if command -v kbuildsycoca6 >/dev/null 2>&1; then kbuildsycoca6 --noincremental >/dev/null 2>&1 || true; fi
+}
+
+
+# Gemini puo' apparire in un'altra categoria se esiste un vecchio launcher
+# indipendente. Non cancellare o alterare collegamenti non gestiti da LEAN.
+lean_gemini_menu_audit(){
+ local appdir="$HOME/.local/share/applications" file managed="$appdir/ai-gemini-ai.desktop"
+ if [[ ! -f "$managed" ]]; then
+   report_warn 'Gemini: launcher LEAN non presente; eventuale launcher KMenuEdit preservato'
+   return 0
+ fi
+ echo '[INFO] Gemini: categoria e posizione definite dall’utente in KMenuEdit; nessuna riscrittura.'
+ grep -E '^(Name|Exec|Categories|NoDisplay|Hidden)=' "$managed" || true
+ # La categoria Network e' legittima per un launcher spostato tramite KMenuEdit.
+ # Non segnalarla come errore e non imporre ArtificialIntelligence (non standard).
 }
 
 lean_social_ferdium(){
@@ -864,7 +1064,7 @@ cloud(){ say 'Cloud integrato KDE'; install_repo kio-gdrive kaccounts-integratio
  install_fallback megasync megasync
  install_fallback pcloud-drive pcloud-drive
 }
-iphone(){ say 'iPhone 16 Pro / KDE'; install_repo kdeconnect libimobiledevice usbmuxd libplist libusbmuxd gphoto2 usbutils; install_fallback ifuse ifuse; echo 'USB: sblocca iPhone e conferma Autorizza. KDE Connect usa rete LAN/Wi-Fi, non USB diretto.'; }
+iphone(){ say 'Smartphone / KDE Connect (iPhone via libimobiledevice, Android via KDE Connect/MTP)'; install_repo kdeconnect libimobiledevice usbmuxd libplist libusbmuxd gphoto2 usbutils; install_fallback ifuse ifuse; echo 'USB iPhone: sblocca il telefono e conferma Autorizza. KDE Connect usa rete LAN/Wi-Fi, non USB diretto, su iOS e Android.'; }
 lean_firefox_privacy_harden(){
  say 'Firefox privacy LEAN: protezioni avanzate, uBlock Origin e impostazioni reversibili'
  install_repo firefox firefox-i18n-it firefox-ublock-origin
@@ -944,7 +1144,6 @@ PYPRIV
  fi
  rm -f "$tmp"
 }
-privacy(){ lean_firefox_privacy_harden; }
 
 
 ledger_setup(){
@@ -961,7 +1160,7 @@ ledger_setup(){
        if yay -Si "$candidate" >/dev/null 2>&1; then
          pkg="$candidate"
          echo "[AUR] $pkg — verifica sempre la provenienza del PKGBUILD per un wallet crypto."
-         yay -S --needed --noconfirm "$pkg"
+         if ask_explicit "Autorizzi installazione AUR di $pkg dopo verifica PKGBUILD?"; then yay -S --needed "$pkg"; fi
          break
        fi
      done
@@ -1037,62 +1236,11 @@ maintenance_audit(){
  echo 'Dimensione cache pacman:'; du -sh /var/cache/pacman/pkg 2>/dev/null || true
  echo 'Flatpak (solo rilevamento):'; if command -v flatpak >/dev/null; then flatpak list --app --columns=application 2>/dev/null || true; else echo 'assente'; fi
  echo 'Snap (solo rilevamento):'; if command -v snap >/dev/null; then snap list 2>/dev/null || true; else echo 'assente'; fi
- echo 'Directory grandi in home (primi 10 elementi):'; du -sh "$HOME"/{Downloads,.cache,Sviluppo} 2>/dev/null || true
+ echo 'Directory grandi in home (primi 10 elementi):'; du -sh "$HOME"/{Downloads,.cache,Projects} 2>/dev/null || true
  echo 'ATTENZIONE: pacman -Qm NON indica pacchetti inutili; include i pacchetti AUR desiderati.'
  echo 'ATTENZIONE: non esiste un modo affidabile per riconoscere software in disuso senza revisione manuale.'
 }
 
-clean_orphans(){
- say 'Pulizia prudente delle dipendenze orfane'
- local orphans=() safe=() protected=() pkg
- mapfile -t orphans < <(pacman -Qdtq 2>/dev/null || true)
- if (( ${#orphans[@]} == 0 )); then echo 'Nessun pacchetto orfano.'; return 0; fi
- for pkg in "${orphans[@]}"; do
-   # Questi pacchetti possono essere necessari per kernel, driver e hardware anche senza dipendenze formali.
-   if [[ "$pkg" =~ ^(linux.*|.*-headers|dkms|.*firmware.*|nvidia.*|lib32-nvidia.*|openrazer.*|.*-dkms|bluez.*|usbmuxd|libimobiledevice|steam-devices)$ ]]; then
-     protected+=("$pkg")
-   else
-     safe+=("$pkg")
-   fi
- done
- if (( ${#protected[@]} )); then
-   warn 'Candidati protetti (NON rimossi automaticamente):'
-   printf '  %s\n' "${protected[@]}"
- fi
- if (( ${#safe[@]} == 0 )); then echo 'Nessun candidato sicuro da proporre.'; return 0; fi
- echo 'Candidati da esaminare:'
- for pkg in "${safe[@]}"; do
-   pacman -Qi "$pkg" | grep -E '^(Name|Description|Install Reason|Required By|Optional For)' || true
-   echo
- done
- warn 'Pacman non puo sapere se usi un programma direttamente o fuori dal gestore pacchetti.'
- if ! sudo -n pacman -Dk; then warn 'Integrita dipendenze non valida: pulizia annullata.'; return 1; fi
- echo 'Controllo transazione: pacman mostrera eventuali dipendenze aggiuntive prima di chiedere conferma.'
- if ask_explicit 'Rimuovere SOLO i candidati elencati? pacman verifichera le dipendenze'; then
-   sudo -n pacman -Rns "${safe[@]}"
- else echo 'Rimozione annullata.'; fi
-}
-
-clean_package_cache(){
- say 'Cache pacman: conserviamo le ultime 2 versioni per consentire rollback'
- if ! command -v paccache >/dev/null; then
-   echo 'paccache non presente. pacman-contrib e disponibile tramite pacman.'
-   if ask 'Installare pacman-contrib per gestire la cache?'; then install_repo pacman-contrib; else return 0; fi
- fi
- echo 'Dimensione attuale:'; du -sh /var/cache/pacman/pkg 2>/dev/null || true
- if ask_explicit 'Rimuovere le vecchie versioni mantenendo le ultime 2 per pacchetto?'; then
-   sudo -n paccache -r -k 2
- fi
- echo 'Dimensione dopo la pulizia:'; du -sh /var/cache/pacman/pkg 2>/dev/null || true
-}
-
-maintenance(){
- maintenance_audit
- clean_orphans
- clean_package_cache
- echo 'Non elimino automaticamente Flatpak, Snap, pacchetti AUR, cache personali, log, dati Docker o modelli Ollama.'
- echo 'Se pacman -Dk segnala problemi, interrompi la pulizia e verifica manualmente.'
-}
 
 
 macos_opensource_fonts(){
@@ -1204,7 +1352,7 @@ preflight(){
    if has_pkg "$p"; then echo "[INSTALLATO] $p"; elif has_repo "$p"; then echo "[PACMAN] $p"; else echo "[NON DISPONIBILE] $p"; fi
  done
  echo 'Pacchetti chiave:'
- pacman -Q nvidia-utils nvidia-open openrazer-driver-dkms steam claude-code docker ollama ollama-cuda kdeconnect libimobiledevice 2>/dev/null || true
+ pacman -Q nvidia-utils nvidia-open mesa vulkan-intel vulkan-radeon steam claude-code docker ollama ollama-cuda ollama-rocm kdeconnect libimobiledevice 2>/dev/null || true
  echo 'GPU:'; lspci -nn | grep -Ei 'vga|3d|display' || true
  echo 'Driver NVIDIA (sola lettura):'; command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || true
  echo 'NetworkManager / Firewall:'
@@ -1286,7 +1434,9 @@ GOOGLE_LINKS
 
 configure_ollama_service(){
  say 'Configurazione iniziale Ollama: localhost, memoria e concorrenza conservative'
- local dir='/etc/systemd/system/ollama.service.d' file="$dir/10-endeavouros-lean.conf"
+ local dir file
+ dir='/etc/systemd/system/ollama.service.d'
+ file="${dir}/10-endeavouros-lean.conf"
  if [[ -e "$file" ]]; then
    warn "Configurazione già presente: $file. Non la sovrascrivo."
  else
@@ -1324,61 +1474,190 @@ OVERRIDE
 }
 
 prepare_openwebui(){
- say 'Open WebUI: interfaccia grafica locale opzionale con Docker Compose'
- if ! has_pkg docker || ! has_pkg docker-compose; then
-   warn 'Docker/Compose assenti; GUI non configurata.'; return 0
+ say 'Open WebUI: verifica installazione esistente (porta 8080)'
+ local url='http://127.0.0.1:8080' dir="$HOME/.config/endeavouros-lean/open-webui" file
+ # Non avviare una seconda istanza: l'utente ha gia Open WebUI in Docker Compose.
+ if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 5 "$url/" -o /dev/null; then
+   echo "[OK] Open WebUI gia raggiungibile: $url (nessuna modifica a container o volumi)"
+   report_ok 'Open WebUI esistente sulla porta 8080 conservato'
+   return 0
  fi
- local dir="$HOME/.config/endeavouros-lean/open-webui" file
+ if ! has_pkg docker || ! command -v docker >/dev/null 2>&1; then
+   warn 'Docker non disponibile: GUI non configurata.'; return 0
+ fi
  mkdir -p "$dir"
  file="$dir/compose.yaml"
  if [[ -e "$file" ]]; then
-   echo "[OK] Configurazione già esistente: $file (non sovrascritta)."
+   echo "[OK] Configurazione gia esistente: $file (non sovrascritta)."
+   echo '[INFO] Verificare eventuali vecchie porte 3000 nel compose prima di avviarlo.'
  else
    cat > "$file" <<'COMPOSE'
 services:
   open-webui:
-    image: ghcr.io/open-webui/open-webui:main
+    image: ghcr.io/open-webui/open-webui:main-slim
     restart: unless-stopped
     network_mode: host
     environment:
       OLLAMA_BASE_URL: http://127.0.0.1:11434
-      WEBUI_HOST: 127.0.0.1
-      WEBUI_PORT: '3000'
+      HOST: 127.0.0.1
+      PORT: '8080'
     volumes:
       - open-webui-data:/app/backend/data
 volumes:
   open-webui-data:
 COMPOSE
-   echo "Creato $file (network host per raggiungere Ollama su localhost)."
+   echo "[OK] File Compose preparato: $file (non avviato)."
  fi
- echo 'Open WebUI è un progetto terzo. La prima esecuzione scarica una immagine container e crea dati locali.'
- echo 'Verifica le immagini e le impostazioni di rete prima di avviare.'
- if ask 'Avviare Open WebUI ora (immagine esterna e Docker abilitato al boot)?'; then
-   sudo -n systemctl enable --now docker.service
-   if ! systemctl is-active --quiet docker.service; then warn 'Docker non avviato'; return 1; fi
-   ( cd "$dir" && sudo -n docker compose up -d )
-   echo 'Interfaccia prevista: http://127.0.0.1:3000'
-   echo 'Verifica ascolto locale: sudo ss -ltnp | grep -E ":(3000|11434) "'
-   echo 'Se 3000 è esposta su 0.0.0.0 o IP LAN, ferma subito il container e controlla WEBUI_HOST.'
+ echo "GUI prevista: $url"
+ echo '[SICUREZZA] Avvio manuale soltanto dopo verifica dei container e dei volumi esistenti.'
+ echo "  cd '$dir' && sudo docker compose config"
+ echo '  sudo docker ps -a --filter name=open-webui'
+ echo '[INFO] LEAN non crea/avvia automaticamente un container duplicato.'
+}
+
+lean_tangram(){
+ say 'Tangram: aggregatore web LLM separato da Ferdium (senza API)'
+ if has_pkg tangram; then
+   report_ok 'Tangram gia installato: nessuna reinstallazione'
+ elif ! ask_explicit 'Installare Tangram dai repository ufficiali Arch (pacman)?'; then
+   report_skip 'Tangram: installazione non autorizzata'; return 0
  else
-   echo "Docker non attivato per Open WebUI. Avvio manuale: cd '$dir' && sudo docker compose up -d"
+   # Aggiornamento completo per evitare installazioni parziali su Arch.
+   if ! sudo -v || ! sudo pacman -Syu --needed tangram || ! has_pkg tangram; then
+     report_fail 'Installazione Tangram non riuscita o interrotta'; return 1
+   fi
+   report_ok 'Tangram installato con pacman (aggiornamento completo)'
  fi
+ echo 'Apri Tangram dal menu KDE e aggiungi queste applicazioni web:'
+ echo '  ChatGPT: https://chatgpt.com'
+ echo '  Claude:  https://claude.ai'
+ echo '  Gemini:  https://gemini.google.com'
+ echo '  Ollama:  http://127.0.0.1:8080'
+ echo '  Copilot: https://copilot.microsoft.com'
+ echo '  Perplexity: https://www.perplexity.ai'
+ echo '  Manus: https://manus.im'
+ echo '  Mistral: https://chat.mistral.ai'
+ echo '  Grok:    https://grok.com'
+ echo 'Ferdium resta dedicato alle chat social; nessuna chiave API richiesta.'
+}
+
+lean_missing_cloud_llms(){
+ say 'LLM cloud: Copilot, Manus, Mistral Le Chat e Grok'
+ local exe appdir icondir key title url file cmd
+ exe=$(lean_shortcut_browser || true)
+ if [[ -z "$exe" ]]; then warn 'Firefox/Chromium non disponibile: nessun launcher creato'; return 1; fi
+ appdir="$HOME/.local/share/applications"
+ icondir="$HOME/.local/share/icons/endeavouros-lean"
+ mkdir -p "$appdir"
+ lean_ai_icons
+ while IFS='|' read -r key title url; do
+   file="$appdir/ai-${key}-ai.desktop"
+   if [[ -f "$file" ]] && ! grep -q '^X-EndeavourOS-LEAN-Managed=true$' "$file"; then
+     warn "Launcher preesistente non gestito, preservato: $file"
+     continue
+   fi
+   cmd=$(lean_shortcut_exec "$exe" "$url")
+   cat > "$file" <<EOF
+[Desktop Entry]
+Type=Application
+Name=$title
+Exec=$cmd
+Icon=$icondir/$key.svg
+Terminal=false
+Categories=X-EndeavourOS-LEAN-LLM;
+StartupNotify=true
+X-EndeavourOS-LEAN-Managed=true
+EOF
+   echo "[OK] $title: $file"
+ done <<'CLOUD_APPS'
+copilot|Microsoft Copilot|https://copilot.microsoft.com
+manus|Manus AI|https://manus.im
+mistral|Mistral Le Chat|https://chat.mistral.ai
+grok|Grok|https://grok.com
+CLOUD_APPS
+ lean_llm_kde_submenu || warn "Sottomenu LLM non creato"
+ if command -v kbuildsycoca6 >/dev/null 2>&1; then kbuildsycoca6 --noincremental || true; fi
+ echo 'I quattro servizi cloud sono link web: non richiedono modelli Ollama né API.'
+ echo 'Tangram: aggiungi manualmente Copilot, Manus, Mistral e Grok; non altero il profilo o le sessioni.'
+}
+
+lean_ollama_models(){
+ say 'LLM locali: inventario e download opzionale dei modelli mancanti'
+ if ! command -v ollama >/dev/null 2>&1; then
+   warn 'Ollama non installato: utilizzare prima Intelligenza artificiale > Ollama locale.'; return 1
+ fi
+ if ! curl -fsS --max-time 4 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+   warn 'Servizio Ollama non raggiungibile su 127.0.0.1:11434. Verifica: systemctl status ollama'; return 1
+ fi
+ echo 'Modelli gia presenti:'
+ ollama list || return 1
+ local ram_mib; ram_mib=$(( $(awk '/MemTotal:/{print $2}' /proc/meminfo) / 1024 ))
+ echo "Profilo conservativo per questo PC: RAM ${ram_mib} MiB, GPU dedicata=${HAS_DGPU} (profilo $HW_PROFILE)."
+ if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || true; fi
+ echo 'I modelli grandi possono esaurire VRAM/RAM o rallentare il sistema: i 4 proposti restano sotto i 4B parametri.'
+ local model free_kb
+ free_kb=$(df -Pk "$HOME" | awk 'NR==2 {print $4}')
+ if [[ ! "$free_kb" =~ ^[0-9]+$ ]] || (( free_kb < 6291456 )); then
+   warn 'Meno di 6 GiB liberi (o spazio non determinabile): nessun download automatico.'; return 1
+ fi
+ # Nessun pull non richiesto; evitare download duplicati.
+ for model in 'qwen3:4b' 'qwen2.5-coder:1.5b' 'llama3.2:3b' 'gemma3:4b'; do
+   if ollama list | awk 'NR>1 {print $1}' | grep -Fxq "$model"; then
+     echo "[PRESENTE] $model"; continue
+   fi
+   echo "[MANCANTE] $model"
+   if ask_explicit "Scaricare $model da Ollama (download di diversi GB, possibile uso CPU)?"; then
+     if ollama pull "$model"; then
+       report_ok "Modello Ollama scaricato: $model"
+     else
+       report_fail "Download modello non riuscito: $model"
+     fi
+   else
+     report_skip "Modello non scaricato: $model"
+   fi
+ done
+ echo 'Verifica finale: ollama list'
+ ollama list
+ echo 'Test manuale: ollama run qwen3:4b'
+ echo 'In Open WebUI (http://127.0.0.1:8080) aggiorna la lista modelli.'
+ echo 'Non sono stati modificati container, password, database o configurazioni NVIDIA.'
 }
 
 ollama_local(){
  say 'LLM locali: Ollama + CUDA NVIDIA + servizio locale + GUI opzionale'
- if [[ $updated -ne 1 ]]; then warn 'Esegui prima aggiornamento completo (opzione 1). Ollama sospeso per evitare aggiornamenti parziali.'; return 0; fi
- install_repo ollama
+ # Una nuova invocazione dello script azzera updated. Se Ollama e gia installato,
+ # la voce Ollama locale puo configurare il servizio senza installare pacchetti o aggiornare il sistema.
+ # Per installare nuovi pacchetti, invece, e necessario un -Syu autorizzato nella sessione.
+ if ! has_pkg ollama; then
+   if [[ $updated -ne 1 ]]; then
+     warn 'Ollama assente: esegui prima Sistema e manutenzione > Aggiornamento completo, poi questa voce nella stessa sessione.'
+     report_skip 'Ollama non installato; nessun aggiornamento parziale eseguito'
+     return 0
+   fi
+   install_repo ollama
+ fi
  if ! has_pkg ollama; then warn 'Ollama non installato.'; return 0; fi
  detect_hardware
  if (( HAS_NVIDIA_GPU )) && has_pkg nvidia-utils && command -v nvidia-smi >/dev/null && nvidia-smi -L >/dev/null 2>&1; then
-   if has_repo ollama-cuda; then install_repo ollama-cuda; else warn 'ollama-cuda non disponibile: controlla supporto GPU.'; fi
- else warn 'GPU NVIDIA non rilevata: possibile uso CPU.'; fi
+   if has_pkg ollama-cuda; then
+     echo '[OK] ollama-cuda gia installato: nessuna modifica ai driver NVIDIA.'
+   elif [[ $updated -eq 1 ]]; then
+     if has_repo ollama-cuda; then install_repo ollama-cuda; else warn 'ollama-cuda non disponibile: controlla supporto GPU.'; fi
+   else
+     warn 'ollama-cuda assente: non installo pacchetti senza aggiornamento completo autorizzato; configurazione Ollama esistente consentita.'
+   fi
+ elif (( HAS_AMD_GPU )) && has_repo ollama-rocm; then
+   if has_pkg ollama-rocm; then echo '[OK] ollama-rocm gia installato: nessuna modifica ai driver AMD.'
+   elif [[ $updated -eq 1 ]] && ask_explicit 'GPU AMD rilevata: installare ollama-rocm? (ROCm supporta solo alcune GPU; in caso contrario Ollama usa la CPU)'; then install_repo ollama-rocm
+   else warn 'ollama-rocm non installato: Ollama usera la CPU finche non sara autorizzato dopo un aggiornamento completo.'; fi
+ else warn 'GPU dedicata NVIDIA/AMD supportata non rilevata: possibile uso CPU.'; fi
  configure_ollama_service
  prepare_openwebui
  echo 'Ollama: un modello alla volta, contesto iniziale 4096, API solo su 127.0.0.1.'
  echo 'Per coding locale, scarica esplicitamente un modello piccolo con: ollama pull qwen2.5-coder:1.5b'
- if (( HAS_NVIDIA_GPU )); then echo 'Verifica GPU: watch -n 1 nvidia-smi'; else echo 'Ollama: CPU; nessun driver CUDA/NVIDIA installato.'; fi
+ if (( HAS_NVIDIA_GPU )); then echo 'Verifica GPU: watch -n 1 nvidia-smi'
+ elif has_pkg ollama-rocm; then echo 'Verifica GPU AMD: rocm-smi oppure journalctl -u ollama'
+ else echo 'Ollama: CPU; nessun driver CUDA/ROCm installato.'; fi
  echo 'Non esporre la porta 11434 e non inserire segreti API nei prompt locali non necessari.'
  echo 'Nessun modello scaricato automaticamente. Non esporre API Ollama su LAN o Internet.'
 }
@@ -1391,7 +1670,7 @@ iphone_diagnostics(){
  if command -v idevice_id >/dev/null; then idevice_id -l || true; fi
  if command -v idevicepair >/dev/null; then idevicepair validate || true; fi
  echo 'Non eseguo idevicepair pair automaticamente: richiede conferma Trust sul telefono.'
- echo 'KDE Connect usa LAN, NON cavo USB diretto. iPhone e Razer sulla stessa rete, non rete ospiti.'
+ echo 'KDE Connect usa LAN, NON cavo USB diretto. Telefono e computer sulla stessa rete, non rete ospiti.'
  if command -v kdeconnect-cli >/dev/null; then kdeconnect-cli --list-devices || true; fi
  echo 'Porte locali KDE Connect (diagnostica):'; if command -v ss >/dev/null; then ss -lntup 2>/dev/null | grep -E '171[4-9]|17[2-5][0-9]|176[0-4]' || true; fi
  echo 'iPhone: stessa LAN (non Wi-Fi ospiti), app KDE Connect aperta, permesso Rete locale abilitato.'
@@ -1428,17 +1707,20 @@ write_if_absent(){
   echo "[CREATO] $dest"
 }
 create_development_workspace(){
- say 'Predisposizione workspace generico: NESSUN progetto creato'
- local root="$HOME/Sviluppo" templates="$HOME/.config/endeavouros-lean/templates"
- mkdir -p "$root" "$templates"
- chmod 700 "$root" "$templates" 2>/dev/null || true
- write_if_absent "$root/README.md" <<'EOF'
-# Sviluppo — workspace multiprogetto
-Crea qui un repository indipendente per ogni progetto QUANDO lo deciderai.
-Nessuna cartella trading-platform, ai-agents o altri progetti viene creata dall'installer.
-Modelli riutilizzabili: ~/.config/endeavouros-lean/templates
-Usa repository GitHub privati per impostazione predefinita.
-EOF
+ say 'Cartella Projects e template generici: NESSUN progetto creato'
+ # ~/Projects: creata solo se assente; se esiste non viene toccata (nessun file aggiunto o sovrascritto).
+ local root="${LEAN_PROJECTS_DIR:-$HOME/Projects}" templates="$HOME/.config/endeavouros-lean/templates"
+ if [[ -d "$root" ]]; then
+   echo "[CONSERVATO] $root (esistente, nessuna modifica)"
+ elif [[ -e "$root" ]]; then
+   warn "$root esiste ma non è una cartella: nessuna modifica."
+   report_warn "Projects: percorso $root occupato da un file"
+ else
+   mkdir -p -- "$root" && chmod 700 -- "$root" 2>/dev/null || true
+   echo "[CREATO] $root"
+   report_ok "Cartella progetti creata: $root"
+ fi
+ mkdir -p -- "$templates"
  write_if_absent "$templates/.gitignore" <<'EOF'
 .env
 .env.*
@@ -1538,7 +1820,7 @@ EOF
 EOF
  write_if_absent "$templates/README.md" <<'EOF'
 # Modelli per futuri progetti
-Quando decidi il nome di un progetto, crea una cartella in ~/Sviluppo e inizializza Git.
+Quando decidi il nome di un progetto, crea una cartella in ~/Projects e inizializza Git.
 Copia soltanto i modelli che servono, rinomina pyproject.toml e personalizza i workflow.
 Le configurazioni Claude e VS Code sono suggerimenti per singoli progetti, NON permessi globali.
 GitHub: `gh auth login`, poi `gh repo create NOME --private` solo su richiesta.
@@ -1546,7 +1828,7 @@ Python: `uv sync --dev`; Node: `npm install` nel progetto, mai npm globale per g
 Docker Compose richiede segreti .env e non viene avviato automaticamente.
 Backup restic: configura repository e password fuori dallo script; nessun backup parte da solo.
 EOF
- echo "[OK] Workspace vuoto: $root"
+ echo "[OK] Cartella progetti: $root"
  echo "[OK] Template generici: $templates"
  echo 'Nessun progetto, repository, database, container o cartella trading creati.'
 }
@@ -1561,9 +1843,9 @@ development_environment(){
  install_codex_cli
  install_fallback gemini-cli gemini-cli
  create_development_workspace
- echo 'Per VS Code: apri ~/Sviluppo con code ~/Sviluppo (nessun progetto creato).' 
+ echo 'Per VS Code: apri ~/Projects con code ~/Projects (nessun progetto creato).'
  echo 'Per GitHub: gh auth login; crea repository PRIVATO manualmente.'
- echo 'Docker non viene abilitato implicitamente: opzione E per attivazione esplicita.'
+ echo 'Docker non viene abilitato implicitamente: Sviluppo > Attiva servizi per attivazione esplicita.'
 }
 
 enable_development_services(){
@@ -1573,14 +1855,14 @@ enable_development_services(){
      sudo -n systemctl enable --now ollama.service
      systemctl is-active ollama.service || true
    fi
- else echo 'Ollama non installato: usa opzione O dopo aggiornamento.'; fi
+ else echo 'Ollama non installato: usa Intelligenza artificiale > Ollama locale dopo aggiornamento.'; fi
  if has_pkg docker; then
    warn 'Docker daemon equivale a servizio con privilegi elevati. Non aggiungo utente al gruppo docker.'
    if ask 'Abilitare Docker all’avvio e avviarlo ora?'; then
      sudo -n systemctl enable --now docker.service
      systemctl is-active docker.service || true
    else echo 'Docker lasciato invariato.'; fi
- else echo 'Docker non installato: usa opzione X.'; fi
+ else echo 'Docker non installato: usa Sviluppo > Docker.'; fi
  echo 'PostgreSQL e Redis NON partono senza .env e scelta esplicita.'
 }
 
@@ -1590,7 +1872,9 @@ enable_development_services(){
 lean_hardware_audit(){
  say 'LEAN v10 — inventario CPU, GPU, SSD, batteria e spazio'
  echo '--- GPU ---'
+ command -v lspci >/dev/null && lspci | grep -Ei 'vga|3d|display' || true
  command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name,memory.total,temperature.gpu --format=csv,noheader || true
+ command -v rocm-smi >/dev/null && rocm-smi --showtemp --showmeminfo vram 2>/dev/null | head -20 || true
  echo '--- Sensori ---'
  command -v sensors >/dev/null && sensors || true
  echo '--- Dischi e mount ---'
@@ -1647,12 +1931,14 @@ lean_ssd_maintenance(){
  if command -v paccache >/dev/null; then
    echo 'Cache prima:'
    du -sh /var/cache/pacman/pkg 2>/dev/null || true
-   echo 'Pulizia automatica cache: mantengo le ultime DUE versioni, nessuna rimozione pacchetti installati.'
-   sudo -n paccache -r -k 2 || true
+   echo 'Pulizia cache opzionale: mantiene le ultime DUE versioni.'
+   if ask_explicit 'Autorizzi la pulizia della cache pacman?'; then
+     sudo -n paccache -r -k 2 || report_warn 'Pulizia cache non riuscita'
+   else report_skip 'Cache pacman conservata'; fi
    echo 'Cache dopo:'
    du -sh /var/cache/pacman/pkg 2>/dev/null || true
  fi
- echo 'Pacchetti orfani: elenco e rimozione solo previa conferma nella funzione C.'
+ echo 'Pacchetti orfani: elenco e rimozione solo previa conferma (Sistema e manutenzione > Manutenzione).'
  pacman -Qdt || true
 }
 
@@ -1700,7 +1986,7 @@ lean_ledger_usb_audit(){
    echo 'Regole Ledger non trovate.'
    echo 'Provenienza ufficiale: https://github.com/LedgerHQ/udev-rules'
    echo 'Per sicurezza non scarico/eseguo script remoti con sudo e non imposto MODE=0666.'
-   echo 'L opzione L tenta pacchetti udev dedicati tramite pacman/yay.'
+   echo 'La voce Ledger del menu Sicurezza tenta pacchetti udev dedicati tramite pacman/yay.'
  else
    echo 'Regole presenti: verifica l accesso dal client Ledger con Nano X collegato.'
  fi
@@ -1718,13 +2004,6 @@ lean_rabby_guide(){
  echo 'Non installo estensioni automaticamente e non apro siti simili a rabby.io.'
 }
 
-lean_v10_all(){
- lean_monitoring_install
- lean_ssd_maintenance
- lean_power_audit
- lean_ledger_usb_audit
- lean_rabby_guide
-}
 
 
 # v12: produttivita, contabilità, video, API/database, workflow foto iPhone e famiglia.
@@ -1737,8 +2016,8 @@ lean_productivity_audit(){
  done
  echo 'iPhone USB:'
  command -v idevice_id >/dev/null && idevice_id -l || true
- echo 'Cartella Sviluppo (nessun progetto):'
- [[ -d "$HOME/Sviluppo" ]] && echo 'Presente' || echo 'Assente'
+ echo 'Cartella Projects (nessun progetto creato dallo script):'
+ [[ -d "${LEAN_PROJECTS_DIR:-$HOME/Projects}" ]] && echo 'Presente' || echo 'Assente'
 }
 
 lean_productivity_install(){
@@ -1806,14 +2085,8 @@ GUIDE
  echo "Guida creata: $cfg/gestione-famiglia.txt"
 }
 
-lean_v12_all(){
- lean_productivity_audit
- lean_productivity_install
- lean_iphone_photo_workflow
- lean_family_setup
-}
 
-# v18 — accesso KDE, audit LUKS e stampante HP Color Laser 150mw/150nw.
+# Accesso KDE, audit LUKS e stampante generica (CUPS, USB o rete).
 # Non esegue cryptsetup, partizionamenti, cambi PAM, firewall o driver grafici.
 lean_kde_lock(){
  say 'Protezione accesso KDE — blocco schermo (senza cambiare password o PAM)'
@@ -1869,10 +2142,10 @@ CIFRATURA LUKS — PIANO SICURO (NESSUNA OPERAZIONE AUTOMATICA)
 LUKS_GUIDE
  report_skip "Conversione LUKS non eseguita per sicurezza; guida: $guide"
 }
-lean_hp_printer_audit(){
- say 'HP Color Laser 150mw/150nw — rilevamento e diagnostica'
- echo 'Stampanti USB HP (vendor 03f0):'
- if command -v lsusb >/dev/null 2>&1; then lsusb -d 03f0: || true; else echo 'lsusb non presente'; fi
+lean_printer_audit(){
+ say 'Stampante — rilevamento e diagnostica (USB e rete, qualsiasi marca)'
+ echo 'Stampanti USB (riconosciute dal nome del produttore):'
+ if command -v lsusb >/dev/null 2>&1; then lsusb | grep -Ei 'print|hewlett|hp,|brother|canon|epson|samsung|lexmark|kyocera|xerox|ricoh|oki' || echo 'Nessuna stampante USB riconosciuta dal nome; se collegata, controlla lsusb manualmente.'; else echo 'lsusb non presente'; fi
  echo 'Code CUPS:'
  if command -v lpstat >/dev/null 2>&1; then lpstat -p -d 2>&1 || true; else echo 'lpstat non presente'; fi
  echo 'Dispositivi USB / rete rilevati da CUPS:'
@@ -1881,10 +2154,10 @@ lean_hp_printer_audit(){
  fi
  echo 'Stampanti IPP di rete (se ippfind disponibile):'
  if command -v ippfind >/dev/null 2>&1; then timeout 8 ippfind 2>/dev/null | head -20 || true; fi
- echo 'Il modello 150mw/150nw può richiedere un driver specifico; NON presumo compatibilità HPLIP o driverless IPP.'
+ echo 'Alcuni modelli (es. laser entry-level) richiedono un driver specifico del produttore; NON presumo compatibilità HPLIP, Gutenprint o driverless IPP.'
 }
-lean_hp_printer_setup(){
- say 'HP Color Laser 150mw/150nw — configurazione CUPS prudente'
+lean_printer_setup(){
+ say 'Stampante — configurazione CUPS prudente (USB o rete)'
  install_repo cups cups-filters cups-pdf usbutils avahi system-config-printer
  if ! command -v system-config-printer >/dev/null 2>&1; then
    report_fail 'system-config-printer mancante: interfaccia grafica stampanti non disponibile'
@@ -1899,21 +2172,19 @@ lean_hp_printer_setup(){
  else
    report_fail 'Impossibile avviare cups.service'
  fi
- lean_hp_printer_audit
- local guide="$HOME/.config/endeavouros-lean/stampante-hp-color-laser-150.txt"
+ lean_printer_audit
+ local guide="$HOME/.config/endeavouros-lean/stampante.txt"
  mkdir -p "$(dirname "$guide")"
  cat > "$guide" <<'HP_GUIDE'
-HP COLOR LASER 150mw / 150nw — CONFIGURAZIONE
+STAMPANTE — CONFIGURAZIONE (qualsiasi marca/modello)
 1. Verifica l'esatto modello sull'etichetta della stampante.
-2. Collega la stampante via USB oppure alla stessa rete Wi-Fi del laptop.
+2. Collega la stampante via USB oppure alla stessa rete Wi-Fi del computer.
 3. Apri system-config-printer, http://localhost:631 oppure Impostazioni di sistema KDE > Stampanti.
    Il messaggio relativo a PackageKit non richiede l'installazione di PackageKit: usa pacman.
 4. Seleziona la stampante rilevata. Controlla il driver proposto e stampa una pagina test.
-5. Questi modelli NON vanno dati per scontati come compatibili con HPLIP o IPP Everywhere.
-   Se non compare un driver compatibile, recupera il driver Linux esatto dal supporto HP
-   per il modello specifico, verifica provenienza e compatibilità prima di installarlo.
-6. Se il modello è 150mw, prova il rilevamento USB e rete; non dare per scontato che HPLIP funzioni.
-7. Nessuna regola firewall, driver non verificato o pacchetto AUR viene installato automaticamente.
+5. Stampanti recenti di rete: prova prima IPP Everywhere (driverless). HP: valuta hplip; altre marche: gutenprint
+   o il driver Linux ufficiale del produttore, verificandone provenienza e compatibilità prima di installarlo.
+6. Nessuna regola firewall, driver non verificato o pacchetto AUR viene installato automaticamente.
 HP_GUIDE
  echo "Guida stampante: $guide"
  if command -v lpstat >/dev/null 2>&1 && lpstat -p 2>/dev/null | grep -q '^printer '; then
@@ -1932,11 +2203,6 @@ HP_GUIDE
  else
    report_skip 'Stampante non configurata in CUPS: completare selezione driver/coda e stampa di prova manualmente'
  fi
-}
-lean_v18_all(){
- lean_kde_lock
- lean_luks_audit
- lean_hp_printer_setup
 }
 
 # Percorso guidato unico: verifica -> audit -> aggiornamento -> installazione -> manutenzione.
@@ -2038,7 +2304,7 @@ lean_vm_install(){
  detect_hardware
  lean_vm_specs
  if [[ ! -e /dev/kvm ]]; then
-   warn '/dev/kvm assente: controlla Intel VT-x nel BIOS/UEFI. Non modifico il firmware.'
+   warn '/dev/kvm assente: controlla Intel VT-x o AMD-V (SVM) nel BIOS/UEFI. Non modifico il firmware.'
    report_warn 'VM: accelerazione KVM non disponibile'
  fi
  # Solo pacchetti ufficiali, nessun modulo proprietario e nessun cambio kernel.
@@ -2047,16 +2313,16 @@ lean_vm_install(){
    report_fail 'Virt-Manager non disponibile dopo installazione'; return 1
  fi
  if systemctl list-unit-files libvirtd.service --no-legend 2>/dev/null | grep -q '^libvirtd.service'; then
-   if true; then # v40: servizio VM incluso di default
+   if ! systemctl is-active --quiet libvirtd.service && ! systemctl is-active --quiet virtqemud.socket && ask_explicit "Attivare libvirtd per le VM?"; then
      if sudo systemctl enable --now libvirtd.service; then report_ok 'libvirtd attivato'; else report_fail 'libvirtd non attivato'; fi
    fi
  elif systemctl list-unit-files virtqemud.socket --no-legend 2>/dev/null | grep -q '^virtqemud.socket'; then
-   if true; then # v40: socket VM incluso di default
+   if ! systemctl is-active --quiet libvirtd.service && ! systemctl is-active --quiet virtqemud.socket && ask_explicit "Attivare virtqemud.socket per le VM?"; then
      if sudo systemctl enable --now virtqemud.socket; then report_ok 'virtqemud.socket attivato'; else report_fail 'virtqemud.socket non attivato'; fi
    fi
  fi
  if ! id -nG "$USER" | grep -qw libvirt; then
-   if true; then # v40: accesso libvirt predisposto di default; nuovo login richiesto
+   if ask_explicit "Aggiungere utente al gruppo libvirt? (logout/login necessario)"; then
      if sudo usermod -aG libvirt "$USER"; then report_ok 'Gruppo libvirt aggiunto: nuovo login necessario'; else report_fail 'Gruppo libvirt: modifica fallita'; fi
    fi
  fi
@@ -2111,7 +2377,7 @@ lean_vm_wizard(){
    ;;
   3)
    echo 'macOS: le condizioni Apple limitano la virtualizzazione a hardware Apple compatibile.'
-   echo 'Su Razer e ThinkPad non scarico né installo macOS, e non aggiro controlli di licenza.'
+   echo 'Su hardware non Apple non scarico né installo macOS, e non aggiro controlli di licenza.'
    report_skip 'VM macOS: non disponibile su hardware non Apple'; return 0;;
   0) return 0;;
   *) warn 'Scelta non valida'; return 0;;
@@ -2199,7 +2465,7 @@ lean_vm_wizard(){
 
 # Syncthing: sincronizzazione peer-to-peer, senza duplicare daemon o cartelle.
 lean_syncthing(){
- say 'Syncthing — sincronizzazione ThinkPad / Razer con GUI locale'
+ say 'Syncthing — sincronizzazione peer-to-peer tra i tuoi computer con GUI locale'
  detect_hardware
  install_repo syncthing
  if ! command -v syncthing >/dev/null 2>&1; then
@@ -2237,7 +2503,7 @@ EOF_SYNCTHING_DESKTOP
    kbuildsycoca6 --noincremental >/dev/null 2>&1 || report_warn 'Syncthing: cache KDE non aggiornata'
  fi
  echo 'GUI: http://127.0.0.1:8384/ (solo computer locale).'
- echo 'Per collegare ThinkPad e Razer: su entrambi apri GUI > Azioni > Mostra ID; aggiungi reciprocamente i dispositivi e condividi SOLO le cartelle scelte.'
+ echo 'Per collegare due computer: su entrambi apri GUI > Azioni > Mostra ID; aggiungi reciprocamente i dispositivi e condividi SOLO le cartelle scelte.'
  echo 'Non condivido automaticamente HOME, profili Firefox, password, cartelle VM, Docker o dati AppFlowy.'
  echo 'iPhone (Möbius Sync): apri l’app, aggiungi il Device ID del computer e autorizza la cartella scelta nella GUI Syncthing.'
  echo 'Nota iOS: Möbius Sync non può sincronizzare continuamente in background; apri l’app per sincronizzazioni affidabili.'
@@ -2250,7 +2516,7 @@ lean_syncthing_report(){
  if systemctl --user is-active --quiet syncthing.service; then echo '  [OK] Servizio utente attivo'; else echo '  [DA FARE] Servizio utente non attivo'; fi
  if systemctl --user is-enabled --quiet syncthing.service; then echo '  [OK] Avvio automatico al login'; else echo '  [DA FARE] Abilitare servizio utente'; fi
  if [[ -f "$HOME/.local/share/applications/lean-syncthing.desktop" ]]; then echo '  [OK] Launcher KDE'; else echo '  [MANCA] Launcher KDE'; fi
- echo '  [DA FARE] Abbinare reciprocamente ThinkPad e Razer tramite Device ID e scegliere cartelle'
+ echo '  [DA FARE] Abbinare reciprocamente i computer tramite Device ID e scegliere cartelle'
  echo '  [DA FARE] Collegare iPhone tramite Möbius Sync (Device ID, autorizzazione cartelle)'
  echo '  [INFO] iOS limita la sincronizzazione in background: aprire Möbius Sync per sincronizzare' 
  echo '  [INFO] GUI locale: http://127.0.0.1:8384/ — non esporre porta 8384 a Internet'
@@ -2284,8 +2550,10 @@ lean_safe_cleanup(){
  fi
  if command -v paccache >/dev/null 2>&1; then
    # Non cancellare l'intera cache: preserva 2 versioni per eventuale rollback.
-   if sudo -n paccache -r -k 2; then report_ok 'Cache pacman ridotta conservando 2 versioni';
-   else report_warn 'Pulizia cache pacman non riuscita'; rc=1; fi
+   if ask_explicit 'Pulire cache pacman conservando 2 versioni?'; then
+    if sudo -n paccache -r -k 2; then report_ok 'Cache pacman ridotta conservando 2 versioni';
+    else report_warn 'Pulizia cache pacman non riuscita'; rc=1; fi
+   else report_skip 'Cache pacman conservata'; fi
  else
    report_skip 'paccache non disponibile: pacman-contrib mancante'
  fi
@@ -2328,7 +2596,7 @@ lean_github_repo(){
  if gh repo view "$repo" >/dev/null 2>&1; then
    echo "Repository già esistente: $repo (nessuna modifica alla visibilità)"
  else
-   if ! gh repo create "$repo" "$visibility" --description 'Installer EndeavourOS KDE LEAN: ThinkPad e Razer' --clone=false; then
+   if ! gh repo create "$repo" "$visibility" --description 'Installer EndeavourOS/Arch KDE LEAN (hardware-agnostic)' --clone=false; then
      report_warn 'GitHub: creazione repository non riuscita'; return 0
    fi
    report_ok "Repository GitHub creato: $repo"
@@ -2426,109 +2694,171 @@ lean_github_report(){
  echo '  [INFO] Sincronizzazione dei quattro file del progetto tramite commit/push'
  echo '  [INFO] Non continua in background'
 }
-lean_guided(){
+lean_base_apps_no_removal(){
+ say 'Applicazioni base senza rimozioni'
+ install_repo calibre libreoffice-fresh libreoffice-fresh-it bitwarden
+ lean_office_fonts
+ lean_libreoffice_gtk3
+}
+lean_dual_hardware_profile(){
  detect_hardware
- if [[ "$HW_PROFILE" == unknown ]]; then
-   warn 'GPU non identificata: percorso automatico interrotto per sicurezza. Esegui audit hardware.'
-   report_fail 'Preflight: hardware grafico sconosciuto; installazione automatica annullata'
+ local memkb threads
+ memkb=$(awk '/MemTotal:/{print $2}' /proc/meminfo)
+ threads=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf 2)
+ LEAN_RAM_MIB=$((memkb/1024))
+ LEAN_THREADS=$threads
+ LEAN_MACHINE_PROFILE="$HW_PROFILE"
+ printf 'Profilo macchina: %s | modello: %s | RAM: %s MiB | thread: %s\n' \
+  "$LEAN_MACHINE_PROFILE" "$HW_MODEL" "$LEAN_RAM_MIB" "$LEAN_THREADS"
+ lean_vm_specs
+ if (( LEAN_RAM_MIB < 12000 )); then
+   echo '[INFO] RAM contenuta: Ollama/Open WebUI e avvio automatico di servizi pesanti esclusi dal percorso B.'
+ fi
+ if (( ! HAS_NVIDIA_GPU )); then echo '[INFO] Nessun pacchetto NVIDIA richiesto dal percorso B.'; fi
+}
+lean_preflight_full(){
+ say 'VERIFICA PRIMA DEL PERCORSO B — NESSUNA MODIFICA'
+ local free_kib free_gib=0
+ echo "Utente: $USER | HOME: $HOME | Shell: $BASH_VERSION"
+ echo "Desktop: ${XDG_CURRENT_DESKTOP:-non rilevato} | sessione: ${XDG_SESSION_TYPE:-non rilevata}"
+ if command -v pacman >/dev/null 2>&1; then echo '[OK] pacman disponibile'; else report_fail 'pacman mancante'; return 1; fi
+ if command -v firefox >/dev/null 2>&1 || command -v chromium >/dev/null 2>&1; then
+   echo '[OK] Browser supportato per i launcher KDE'
+ else warn 'Firefox/Chromium assenti: B dovra installarne uno prima dei launcher'; fi
+ if command -v kbuildsycoca6 >/dev/null 2>&1; then echo '[OK] KDE Plasma 6 cache disponibile';
+ else warn 'kbuildsycoca6 assente: menu KDE da verificare manualmente'; fi
+ if command -v df >/dev/null 2>&1; then
+   free_kib=$(df -Pk "$HOME" | awk 'NR==2 {print $4}')
+   free_gib=$((free_kib/1024/1024))
+   echo "Spazio libero HOME: ${free_gib} GiB"
+   if ((free_gib < 15)); then warn 'Meno di 15 GiB liberi: installazione B potenzialmente insufficiente'; fi
+ fi
+ if command -v pacman >/dev/null 2>&1; then
+   echo 'Pacchetti core installati:'
+   local pkg
+   for pkg in firefox tangram ollama docker virt-manager; do
+     if pacman -Qq "$pkg" >/dev/null 2>&1; then echo "  [OK] $pkg"; else echo "  [NON INSTALLATO] $pkg"; fi
+   done
+ fi
+ echo '[INFO] B puo aggiornare pacchetti, installare applicazioni e abilitare servizi.'
+ echo '[INFO] B non e una simulazione: usa prima un backup o snapshot verificato.'
+ echo '[INFO] Non tocca il menu KMenuEdit personalizzato, le sessioni Tangram o i dati Open WebUI.'
+ report_ok 'Audit preliminare B completato (sola lettura)'
+}
+
+# Kali-inspired prompt for Bash in Konsole; no shell changes, themes, or root access.
+lean_kali_terminal(){
+  local rc="$HOME/.bashrc" marker='# BEGIN ENDEAVOUROS LEAN KALI PROMPT' backup
+  if [[ ! -f "$rc" ]]; then
+    if ! ask_explicit 'File ~/.bashrc assente: crearne uno per il prompt Kali-like?'; then return 0; fi
+    touch "$rc"
+  fi
+  if grep -Fq "$marker" "$rc"; then
+    echo '[OK] Prompt Kali-like LEAN già configurato: nessuna duplicazione.'
+    return 0
+  fi
+  echo 'Anteprima: ┌──(utente㉿computer)-[~/cartella]'
+  echo '           └─$ comando'
+  echo 'Solo Bash interattivo: colori blu/verde, due righe, nessun cambio shell.'
+  if ! ask_explicit 'Attivare prompt Kali-like in Konsole per i nuovi terminali?'; then
+    report_skip 'Prompt Kali-like non autorizzato'; return 0
+  fi
+  backup="$HOME/.bashrc.lean-backup-$(date +%Y%m%d-%H%M%S)"
+  cp -a "$rc" "$backup" || return 1
+  cat >> "$rc" <<'KALI_PROMPT'
+
+# BEGIN ENDEAVOUROS LEAN KALI PROMPT
+# Only interactive Bash; \[ \] keeps readline cursor positioning correct.
+if [[ $- == *i* && -n ${BASH_VERSION:-} ]]; then
+  if [[ -t 1 && ${TERM:-dumb} != dumb ]]; then
+    PS1='\[\e[1;34m\]┌──(\[\e[1;32m\]\u㉿\h\[\e[1;34m\])-[\[\e[1;37m\]\w\[\e[1;34m\]]\n└─\[\e[1;32m\]\\$\[\e[0m\] '
+  else
+    PS1='┌──(\u@\h)-[\w]\n└─\\$ '
+  fi
+fi
+# END ENDEAVOUROS LEAN KALI PROMPT
+KALI_PROMPT
+  echo "[OK] Prompt configurato. Backup: $backup"
+  echo 'Apri una nuova scheda Konsole per verificarlo. Ripristino: copia il backup sopra ~/.bashrc.'
+  report_ok 'Prompt Bash Kali-like configurato senza modificare Konsole/KDE'
+}
+
+lean_guided(){
+ RUN_MODE='B — profilo hardware adattivo, conferme esplicite'
+ say 'LEAN — installazione guidata sicura (profilo adattivo al PC rilevato)'
+ lean_dual_hardware_profile
+ echo 'FASE 1 — controlli di sola lettura'
+ preflight || { report_fail 'Preflight fallito: B interrotto'; return 1; }
+ maintenance_audit || { report_fail 'Audit pacman fallito: B interrotto'; return 1; }
+ if ! ask_explicit 'Avviare installazione dei pacchetti mancanti per questo PC? (nessuna rimozione automatica)'; then
+   report_skip 'B interrotto: installazione non autorizzata'; return 0
+ fi
+ echo 'FASE 2 — aggiornamento completo (con conferma separata)'
+ if ! update_system; then
+   report_warn 'Aggiornamento non completato/autorizzato: installazioni sospese per evitare aggiornamenti parziali'
    return 1
  fi
- RUN_MODE="B — percorso guidato completo"
- say 'PERCORSO GUIDATO LEAN: hardware -> app -> garbage -> GitHub -> aggiornamento -> installazione -> pulizia'
- echo 'FASE 1/6 — Inventario e preflight (sola lettura)'
- run_step preflight
- run_step lean_browser_audit
- # La pulizia/ricreazione avviene prima delle installazioni; si ripete a fine percorso.
- echo "KDE: ricostruzione automatica shortcut sospesa per sicurezza; usare opzione 58 solo dopo audit."
- detect_hardware
- echo 'FASE 2/6 — Audit pacchetti, servizi, hardware, alimentazione e Ledger (sola lettura)'
- run_step maintenance_audit
- run_step lean_hardware_audit
- run_step lean_power_audit
- run_step lean_productivity_audit
- echo 'Controllo garbage pre-installazione (sola lettura, nessuna rimozione):'
- run_step maintenance_audit
- echo 'Ledger USB: verifica preliminare senza installare pacchetti.'
- if command -v lsusb >/dev/null; then lsusb -d 2c97: || true; else echo 'usbutils non installato: verra installato in seguito.'; fi
- echo 'FASE 3/6 — GitHub (con consenso; bootstrap git/gh se assenti)'
- run_step lean_github_repo
- echo 'FASE 4/6 — Aggiornamento completo del sistema (necessario su Arch)'
- run_step update_system
- echo 'FASE 5/6 — Installazioni per categoria (sistema -> sviluppo -> AI -> sync -> comunicazione -> produttività -> media)'
- echo '  [1/8] SISTEMA, HARDWARE, SICUREZZA E VIRTUALIZZAZIONE'
- run_step base_apps
- run_step lean_vm_install
- run_step lean_gpu_mode
- run_step lean_gpu_shortcuts
- run_step lean_firefox_replace_brave
- run_step lean_firefox_privacy_harden
- run_step security_audit
- run_step privacy
- run_step lean_monitoring_install
- run_step lean_power_audit
- run_step lean_kde_lock
- run_step lean_luks_audit
- run_step lean_hp_printer_setup
- echo '  [2/8] SVILUPPO E INFRASTRUTTURA'
- run_step development_environment
- run_step docker_setup
- run_step enable_development_services
- echo '  [3/8] INTELLIGENZA ARTIFICIALE'
- run_step ai_tools
- run_step ollama_local
- echo '  [4/8] SINCRONIZZAZIONE, CLOUD E DISPOSITIVI'
- run_step lean_syncthing
- run_step cloud
- run_step iphone
- run_step iphone_diagnostics
- run_step lean_iphone_photo_workflow
- echo '  [5/8] COMUNICAZIONE, MAIL E VPN'
- run_step lean_tuta_desktop
- run_step lean_social_ferdium
- run_step proton_vpn_setup
- echo '  [6/8] OFFICE, GOOGLE E PRODUTTIVITÀ'
- run_step lean_office_fonts
- run_step lean_appflowy
- run_step lean_productivity_install
- run_step lean_family_setup
- echo '  [7/8] MEDIA, GIOCHI, FINANZA E PERIFERICHE'
- run_step photo_video
- run_step steam_setup
- run_step ledger_setup
- run_step lean_ledger_usb_audit
- run_step lean_rabby_guide
- run_step defi_setup
- run_step pdf_ocr_setup
- echo '  [8/8] ASPETTO KDE E CONTROLLO DI COMPLETAMENTO'
- run_step macos_desktop_look
- echo 'FASE 6/6 — Controllo finale e pulizia conservativa'
- run_step maintenance_audit
- run_step lean_safe_cleanup
- run_step lean_hardware_audit
- run_step lean_rebuild_web_shortcuts
- run_step lean_postinstall_review
- echo 'Fasi completate. Il report finale verrà mostrato alla chiusura del menu.'
+ echo 'FASE 3 — applicazioni e strumenti di base'
+ echo '[SICUREZZA] Nessuna pulizia, rimozione, cambio GPU/display manager o pubblicazione GitHub nel percorso B.'
+ local fn fails_before
+ local -a phases=(
+   lean_base_apps_no_removal lean_vm_install ai_tools docker_setup
+   lean_tuta_desktop lean_social_ferdium lean_appflowy
+   lean_office_fonts cloud iphone pdf_ocr_setup photo_video
+   lean_productivity_install lean_rebuild_web_shortcuts
+ )
+ for fn in "${phases[@]}"; do
+   fails_before=${#REPORT_FAIL[@]}
+   if ! "$fn"; then
+     report_fail "B interrotto alla fase $fn; verificare log prima di riprendere"
+     return 1
+   fi
+   if (( ${#REPORT_FAIL[@]} > fails_before )); then
+     report_fail "B interrotto: errori registrati durante $fn"
+     return 1
+   fi
+ done
+ if (( LEAN_RAM_MIB >= 12000 )); then
+   if ask_explicit 'Installare/configurare Ollama locale e servizi AI su questo PC?'; then
+     ollama_local || { report_fail 'Ollama: fase fallita'; return 1; }
+   else report_skip 'Ollama escluso dal percorso B'; fi
+ else
+   report_skip 'Ollama/Open WebUI esclusi dal B per RAM inferiore a 12 GiB'
+ fi
+ if ask_explicit 'Personalizzare anche il prompt Bash di Konsole in stile Kali Linux?'; then
+   lean_kali_terminal || report_warn 'Personalizzazione terminale non completata'
+ fi
+ echo 'FASE 4 — verifica finale (sola lettura)'
+ lean_postinstall_review || report_warn 'Audit finale con avvisi'
+ echo 'NON eseguiti automaticamente: rimozioni Brave/ONLYOFFICE, pulizia orfani/cache, GitHub push, cambio GPU, tema KDE, cambio display manager.'
+ echo 'Menu: GitHub in Sviluppo; pulizia in Sistema e manutenzione; preferenze GPU in Grafica, gaming e virtualizzazione.'
 }
+
 lean_gpu_shortcuts(){
- say 'Shortcut KDE: preferenza GPU Intel / NVIDIA / Hybrid'
+ say 'Shortcut KDE: preferenza GPU integrata / dedicata / Hybrid'
  detect_hardware
- if (( ! HAS_NVIDIA_GPU )); then
-   echo 'NVIDIA assente: nessuna scelta GPU richiesta; solo Intel se rilevata.'
+ if (( ! HAS_DGPU )); then
+   echo 'GPU dedicata assente: nessuna scelta GPU richiesta; eventuali shortcut LEAN obsoleti vengono rimossi.'
  fi
  local bindir="$HOME/.local/bin" appdir="$HOME/.local/share/applications" icondir="$HOME/.local/share/icons/hicolor/scalable/apps"
  mkdir -p "$bindir" "$appdir" "$icondir" "$HOME/.config/endeavouros-lean"
  local helper="$bindir/lean-gpu-select"
- if [[ -e "$helper" ]] && ! grep -Eq '^# LEAN GPU SELECT v(32|33|34)$' "$helper"; then
+ if [[ -e "$helper" ]] && ! grep -Eq '^# LEAN GPU SELECT v(32|33|34|35)$' "$helper"; then
    warn "Helper personalizzato esistente: $helper. Non sovrascrivo."; report_warn 'Shortcut GPU: helper personalizzato non modificato'; return 0
  fi
  cat > "$helper" <<'GPU_SELECT'
 #!/usr/bin/env bash
-# LEAN GPU SELECT v34
+# LEAN GPU SELECT v35
 set -euo pipefail
 case "${1:-}" in
- intel|nvidia|hybrid) mode="$1";;
- *) printf 'Uso: lean-gpu-select {intel|nvidia|hybrid}\n' >&2; exit 2;;
+ intel|nvidia|amd|hybrid) mode="$1";;
+ *) printf 'Uso: lean-gpu-select {intel|nvidia|amd|hybrid}\n' >&2; exit 2;;
 esac
+if [[ "$mode" == amd ]] && ! grep -lqi '0x1002' /sys/bus/pci/devices/*/vendor 2>/dev/null; then
+  message='GPU AMD non rilevata: preferenza non cambiata.'
+  command -v kdialog >/dev/null 2>&1 && kdialog --error "$message" || printf '%s\n' "$message" >&2
+  exit 1
+fi
 if [[ "$mode" == nvidia ]] && { [[ ! -e /sys/bus/pci/devices ]] || ! grep -lqi '0x10de' /sys/bus/pci/devices/*/vendor 2>/dev/null || ! command -v prime-run >/dev/null 2>&1; }; then
   message='prime-run non trovato: preferenza NVIDIA non cambiata.'
   command -v kdialog >/dev/null 2>&1 && kdialog --error "$message" || printf '%s\n' "$message" >&2
@@ -2538,8 +2868,9 @@ confdir="$HOME/.config/endeavouros-lean"
 mkdir -p "$confdir"
 printf '%s\n' "$mode" > "$confdir/gpu-mode"
 case "$mode" in
- intel) label='Intel (preferenza per le applicazioni LEAN)' ;;
+ intel) label='GPU integrata (preferenza per le applicazioni LEAN)' ;;
  nvidia) label='NVIDIA (applicazioni LEAN tramite PRIME)' ;;
+ amd) label='AMD dedicata (applicazioni LEAN con DRI_PRIME=1)' ;;
  hybrid) label='Hybrid (applicazioni LEAN in avvio normale)' ;;
 esac
 message="Preferenza GPU: $label. Il desktop KDE e le applicazioni già aperte NON cambiano GPU. Usa lean-gpu-run per le nuove applicazioni."
@@ -2547,16 +2878,26 @@ if command -v notify-send >/dev/null 2>&1; then notify-send 'EndeavourOS LEAN ·
 GPU_SELECT
  chmod 755 "$helper"
  local mode title color glyph iconfile desktop
- for mode in intel nvidia hybrid; do
-   if (( ! HAS_NVIDIA_GPU )) && { [[ "$mode" != intel ]] || (( ! HAS_INTEL_GPU )); }; then
+ local wanted
+ for mode in intel nvidia amd hybrid; do
+   # Crea solo gli shortcut sensati per l'hardware rilevato; rimuove quelli LEAN non piu' pertinenti.
+   wanted=0
+   case "$mode" in
+    intel)  if (( HAS_DGPU && HAS_IGPU )); then wanted=1; fi;;
+    nvidia) if (( HAS_NVIDIA_GPU )); then wanted=1; fi;;
+    amd)    if (( HAS_AMD_GPU && HAS_INTEL_GPU && ! HAS_NVIDIA_GPU )); then wanted=1; fi;;
+    hybrid) if (( HAS_DGPU )); then wanted=1; fi;;
+   esac
+   if (( ! wanted )); then
      desktop="$appdir/endeavouros-gpu-$mode.desktop"
-     if [[ -f "$desktop" ]] && grep -Eq '^# LEAN GPU SHORTCUT v(32|33|34)$' "$desktop"; then rm -f "$desktop"; fi
-     report_skip "GPU $mode: shortcut non creato (NVIDIA assente)"
+     if [[ -f "$desktop" ]] && grep -Eq '^# LEAN GPU SHORTCUT v(32|33|34|35)$' "$desktop"; then rm -f "$desktop"; fi
+     report_skip "GPU $mode: shortcut non necessario per questo hardware"
      continue
    fi
    case "$mode" in
-    intel) title='GPU · Intel'; color='#2676b8'; glyph='I';;
+    intel) title='GPU · Integrata'; color='#2676b8'; glyph='I';;
     nvidia) title='GPU · NVIDIA'; color='#3f8b34'; glyph='N';;
+    amd) title='GPU · AMD dedicata'; color='#b4321e'; glyph='A';;
     hybrid) title='GPU · Hybrid'; color='#7359ad'; glyph='H';;
    esac
    iconfile="$icondir/endeavouros-gpu-$mode.svg"
@@ -2572,14 +2913,14 @@ GPU_SELECT
 SVG
    fi
    desktop="$appdir/endeavouros-gpu-$mode.desktop"
-   if [[ -e "$desktop" ]] && ! grep -Eq '^# LEAN GPU SHORTCUT v(32|33|34)$' "$desktop"; then
+   if [[ -e "$desktop" ]] && ! grep -Eq '^# LEAN GPU SHORTCUT v(32|33|34|35)$' "$desktop"; then
      warn "Collegamento personalizzato esistente: $desktop (preservato)"
      report_warn "GPU: collegamento $mode non modificato"
      continue
    fi
    cat > "$desktop" <<EOF
 [Desktop Entry]
-# LEAN GPU SHORTCUT v34
+# LEAN GPU SHORTCUT v35
 Type=Application
 Name=$title
 Comment=Imposta la preferenza per le applicazioni avviate con lean-gpu-run; non cambia la GPU del desktop
@@ -2594,16 +2935,16 @@ EOF
  if command -v gtk-update-icon-cache >/dev/null 2>&1; then gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true; fi
  if command -v kbuildsycoca6 >/dev/null 2>&1; then kbuildsycoca6 --noincremental >/dev/null 2>&1 || true; fi
  echo 'Se le icone non compaiono subito, chiudi e riapri il menu KDE oppure esci e rientra nella sessione.'
- echo 'Nel menu KDE: GPU · Intel, GPU · NVIDIA, GPU · Hybrid.'
+ echo 'Nel menu KDE: GPU · Integrata, GPU · NVIDIA / GPU · AMD dedicata, GPU · Hybrid (solo quelli pertinenti).'
  echo 'Questi shortcut salvano solo la preferenza per lean-gpu-run; NON commutano il desktop.'
  report_skip 'GPU: per-app via lean-gpu-run; non modifica sessione KDE, driver o MUX'
 }
 lean_gpu_mode(){
- say 'GPU: Intel / NVIDIA / Hybrid (PRIME, senza modifiche ai driver)'
+ say 'GPU: integrata / dedicata / Hybrid (PRIME o DRI_PRIME, senza modifiche ai driver)'
  detect_hardware
- if (( ! HAS_NVIDIA_GPU )); then
-   # Nessuna scelta interattiva sui portatili senza NVIDIA.
-   # Non creare launcher PRIME né chiedere Intel/NVIDIA/Hybrid.
+ if (( ! HAS_DGPU )); then
+   # Nessuna scelta interattiva sui PC con una sola GPU.
+   # Non creare launcher PRIME né chiedere integrata/dedicata/Hybrid.
    local confdir="$HOME/.config/endeavouros-lean" conf
    conf="$confdir/gpu-mode"
    if (( HAS_INTEL_GPU )); then
@@ -2627,18 +2968,18 @@ lean_gpu_mode(){
  if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=name,driver_version --format=csv,noheader || true; fi
  echo 'Sessione:' "${XDG_SESSION_TYPE:-non disponibile}"
  cat <<'GPU_MENU'
- 1) Intel integrata — preferenza per app compatibili (non spegne la NVIDIA)
- 2) NVIDIA RTX (solo se rilevata) — avvio di singole applicazioni su NVIDIA con PRIME
- 3) Hybrid (consigliata) — desktop invariato, NVIDIA su richiesta
+ 1) GPU integrata — preferenza per le app LEAN (non spegne la GPU dedicata)
+ 2) GPU dedicata — NVIDIA tramite PRIME (prime-run) oppure AMD tramite DRI_PRIME=1
+ 3) Hybrid (consigliata) — desktop invariato, GPU dedicata su richiesta
  0) Annulla
 GPU_MENU
  local choice confdir conf target tmp
  read -r -p 'Modalità GPU [3]: ' choice || return 0
- if (( HAS_NVIDIA_GPU )); then choice=${choice:-3}; else choice=${choice:-1}; fi
+ choice=${choice:-3}
  case "$choice" in
   1) target=intel;;
-  2) if (( ! HAS_NVIDIA_GPU )); then warn 'NVIDIA assente: selezione annullata'; return 0; fi; target=nvidia;;
-  3) if (( HAS_NVIDIA_GPU )); then target=hybrid; else target=intel; fi;;
+  2) if (( HAS_NVIDIA_GPU )); then target=nvidia; elif (( HAS_AMD_GPU )); then target=amd; else warn 'GPU dedicata assente: selezione annullata'; return 0; fi;;
+  3) target=hybrid;;
   0) report_skip 'Selezione GPU annullata'; return 0;;
   *) warn 'Selezione non valida'; return 0;;
  esac
@@ -2649,14 +2990,14 @@ GPU_MENU
  # Modalità per-app; nessun cambio globale del display manager o del driver.
  printf '%s\n' "$target" > "$conf"
  local launcher="$HOME/.local/bin/lean-gpu-run"
- if [[ -e "$launcher" ]] && ! grep -q '^# LEAN GPU RUN v29$' "$launcher"; then
+ if [[ -e "$launcher" ]] && ! grep -Eq '^# LEAN GPU RUN v(29|30)$' "$launcher"; then
    warn "Launcher $launcher preesistente e personalizzato: non lo sovrascrivo."
    report_warn 'GPU: configurazione salvata ma launcher personalizzato non modificato'
    return 0
  fi
  cat > "$launcher" <<'GPU_RUN'
 #!/usr/bin/env bash
-# LEAN GPU RUN v29
+# LEAN GPU RUN v30
 set -euo pipefail
 modefile="$HOME/.config/endeavouros-lean/gpu-mode"
 mode=$(cat "$modefile" 2>/dev/null || printf hybrid)
@@ -2669,8 +3010,11 @@ case "$mode" in
    if command -v prime-run >/dev/null 2>&1; then exec prime-run "$@"; fi
    printf 'prime-run assente: non posso garantire NVIDIA. Nessuna modifica eseguita.\n' >&2
    exit 1;;
+ amd)
+   # GPU AMD dedicata tramite Mesa PRIME offload (nessun driver proprietario richiesto).
+   exec env DRI_PRIME=1 "$@";;
  hybrid)
-   # L'avvio standard non forza NVIDIA; usare lean-gpu-nvidia per PRIME.
+   # L'avvio standard non forza la GPU dedicata; usare lean-gpu-nvidia (PRIME) o DRI_PRIME=1.
    exec "$@";;
  *) printf 'Modalità GPU non valida: %s\n' "$mode" >&2; exit 1;;
 esac
@@ -2689,169 +3033,165 @@ GPU_NVIDIA
  fi
  echo "[OK] Preferenza salvata: $target"
  echo 'Per applicazione: ~/.local/bin/lean-gpu-run nome-app'
- echo 'Per forzare NVIDIA su un singolo programma: ~/.local/bin/lean-gpu-nvidia nome-app'
+ if (( HAS_NVIDIA_GPU )); then echo 'Per forzare NVIDIA su un singolo programma: ~/.local/bin/lean-gpu-nvidia nome-app'; fi
  if (( HAS_NVIDIA_GPU )); then echo 'Steam (gioco specifico): prime-run %command%'; fi
  echo 'Nota: il desktop KDE resta sulla configurazione GPU attuale.'
- echo 'Nota: Intel non disattiva fisicamente la RTX; NVIDIA non forza tutto Plasma sulla RTX.'
+ echo 'Nota: la preferenza integrata non spegne fisicamente la GPU dedicata; la preferenza dedicata non sposta tutto Plasma su di essa.'
+ if [[ "$target" == amd ]]; then echo 'AMD: DRI_PRIME=1 seleziona la GPU dedicata tramite Mesa; verifica con glxinfo -B o vulkaninfo --summary.'; fi
  if [[ "$target" == nvidia ]] && ! command -v prime-run >/dev/null 2>&1; then
    warn 'prime-run assente: modalità NVIDIA selezionata ma launcher non operativo finché non sarà disponibile.'
    report_warn 'GPU NVIDIA: manca prime-run'
  fi
  report_ok "GPU: preferenza applicazioni impostata su $target"
 }
-cat <<'INFO'
+cat <<INFO
 
-EndeavourOS KDE — installer LEAN v49 (percorso guidato predefinito + workspace vuoto)
-- pacman > yay; installer ufficiale solo come scelta manuale quando necessario
-- nessuna nuova Flatpak/Snap
-- non tocca NVIDIA kernel/driver, OpenRazer, Plasma o Wayland
-- installazioni automatiche; conferma solo per disinstallazioni e pulizia orfani/cache
-- SOLO LibreOffice; ONLYOFFICE rimosso solo su conferma dopo verifica
-- Ledger Nano X: wallet Linux via pacman/AUR se disponibile, regole USB dedicate
-- Proton VPN: GUI + CLI da pacman, senza alterare configurazione di rete
-- Claude Code: controlla il binario pacman prima di rimuovere un eventuale symlink npm in conflitto
-- Firefox Cupertino: tema ufficialmente distribuito tramite Mozilla Add-ons; conferma nel browser
-- VS Code + Claude Code + Codex, Docker Compose + GitHub, DeFi, PDF/OCR
-- font KDE open source stile macOS e pulsanti finestra a sinistra, con backup di kdeglobals/kwinrc
-- HomeBank (contabilita semplice), OBS, HandBrake, DBeaver, Bruno, Pandoc, guida foto iPhone e famiglia
-- CUPS HP Color Laser 150mw/150nw, blocco KDE e audit LUKS (nessuna cifratura automatica)
-- digiKam + darktable, Kdenlive, Google Keep/Gmail/Calendar/Tasks, Ollama con servizio locale e Open WebUI opzionale, diagnostica iPhone, audit backup
+EndeavourOS / Arch KDE — installer LEAN (hardware-agnostic)
+Distribuzione: ${LEAN_DISTRO:-Arch-based} | Modello: $HW_MODEL | profilo GPU: $HW_PROFILE
+- pacman > yay; nessuna nuova Flatpak/Snap; nessun driver, kernel, bootloader o display manager modificato
+- GPU Intel / NVIDIA / AMD (anche ibride) rilevate prima di ogni operazione: nessun modello di PC presupposto
+- installazioni automatiche; rimozioni, aggiornamenti e pubblicazioni sempre con conferma esplicita
+- 8 categorie con al massimo 6 voci ciascuna; B = percorso guidato completo (verifica → aggiornamento → installazione → audit)
 INFO
-while true; do
- cat <<'MENU'
 
- B) PREDEFINITO — hardware > software > garbage > GitHub > installazione > pulizia (INVIO)
-  0) Esci
-  1) Inventario e preflight (sola lettura)
-  2) Aggiornamento completo pacman -Syu
-  3) Inventario/migrazione vecchie installazioni
-  4) Calibre + LibreOffice + Bitwarden
-  5) Steam + DualShock 4 + gaming
-  6) AI CLI / sviluppo
-  7) AI desktop (Chromium o Firefox, mai Brave)
-  8) Cloud (Google Drive KDE, Dropbox, MEGA, pCloud)
-  9) iPhone + KDE Connect
- 10) Firefox + uBlock Origin
- 11) Ripara conflitto Claude Code npm/pacman
- 12) Tema Firefox macOS-like Cupertino
- 13) Ledger Wallet / Nano X (USB + udev)
- 14) Proton VPN (GUI + CLI)
- 15) Docker + Compose + GitHub
- 16) Wallet DeFi browser (guida)
- 17) PDF avanzati, scansioni, OCR
- 18) Fotografia RAW/ProRAW + Kdenlive
- 19) Google Keep/Gmail/Calendar/Tasks
- 20) Ollama locale + Open WebUI opzionale
- 21) Diagnostica iPhone USB / KDE Connect LAN
- 22) Audit sicurezza, backup, hardware
- 23) Workspace vuoto + template generici
- 24) Attiva servizi sviluppo (Docker/Ollama)
- 25) Manutenzione LEAN: audit, orfani e cache
- 26) Aspetto macOS: font e pulsanti finestre
- 27) Monitoraggio hardware: installazione + audit
- 28) SSD/cache: TRIM e pulizia conservativa
- 29) Profili energetici: sola verifica
- 30) Ledger USB: diagnostica e regole
- 31) Rabby Wallet: guida ufficiale
- 32) Tutte le nuove funzioni LEAN v10
- 33) Produttività: HomeBank, video, API, famiglia
- 34) Stampante HP + blocco KDE + audit LUKS
- 35) Ripara icone shortcut Google e famiglia
- 36) Stampante HP Color Laser 150mw: CUPS + test
- 37) LibreOffice multi-monitor: backend GTK3
- 38) Solo audit manutenzione (nessuna modifica)
- 39) Tutte le sezioni (stesso percorso ordinato di B)
- 40) Dropbox: integrazione KDE / Dolphin
- 41) GPU: Intel / NVIDIA / Hybrid (selettore sicuro)
- 42) Social media / messaggistica: Ferdium
- 43) Crea shortcut KDE GPU Intel / NVIDIA / Hybrid
- 44) Rileva hardware e profilo GPU (sola lettura)
- 45) Virtualizzazione: QEMU/KVM, Virt-Manager, SPICE e USB (anche in B e 39)
- 46) VM guidata: crea e avvia Windows 11 / Linux (macOS solo info)
- 47) Ripara collegamento Virt-Manager nel menu KDE (senza reinstallare)
- 48) Firefox: configura privacy avanzata (senza reinstallare tutto)
- 49) Font compatibilità Microsoft / LibreOffice
- 50) Google Docs, Sheets, Slides, Drive (Firefox)
- 51) Tuta Mail (solo client desktop AUR, nessun fallback web)
- 52) Audit hardware e pulizia conservativa
- 53) AppFlowy: note, database e progetti (alternativa a Notion)
- 54) Syncthing: installa, avvia e crea collegamento KDE
- 55) Audit e pulizia sicura: dipendenze, orfani e cache
- 56) GitHub: crea/verifica repository e sincronizza 4 file (script + 3 guide)
- 57) OpenAI Codex CLI: installa/verifica (senza reinstallare la suite)
- 58) Verifica e aggiorna 13 launcher web senza cancellazioni (Chromium > Firefox)
- Nota: il rilevamento hardware avviene automaticamente prima di ogni operazione
-MENU
- read -r -p 'Scelta [B]: ' choice || break
- choice=${choice:-B}
+# ---------------------------------------------------------------------------
+# MENU A CATEGORIE
+# Ogni voce: 'etichetta|sudo|funzione [funzione ...]'
+#   sudo=1 -> autenticazione richiesta prima dell'esecuzione (modifica il sistema)
+#   sudo=0 -> sola lettura o modifiche limitate alla HOME dell'utente
+# Le funzioni elencate vengono eseguite in sequenza tramite run_step: un errore
+# viene registrato nel report senza interrompere il menu.
+# ---------------------------------------------------------------------------
+declare -A MENU_TITLE=(
+ [1]='Sistema e manutenzione'
+ [2]='Ufficio e produttività'
+ [3]='Browser, web e comunicazione'
+ [4]='Intelligenza artificiale'
+ [5]='Sviluppo'
+ [6]='Multimedia, cloud e dispositivi mobili'
+ [7]='Grafica, gaming e virtualizzazione'
+ [8]='Sicurezza, privacy e crypto'
+)
+declare -a MENU_1=(
+ 'Inventario completo: sistema, hardware, pacchetti, controllo pre-B (sola lettura)|0|preflight lean_hardware_audit maintenance_audit lean_preflight_full'
+ 'Aggiornamento completo pacman -Syu (conferma esplicita)|1|update_system'
+ 'Inventario e migrazione installazioni esterne: Flatpak, Snap, AppImage, npm|1|migration'
+ 'Manutenzione: dipendenze, orfani protetti, cache pacman, SSD/TRIM (con conferma)|1|maintenance_audit lean_safe_cleanup lean_ssd_maintenance'
+ 'Monitoraggio hardware (btop, nvtop, sensori, SMART) + audit profili energetici|1|lean_monitoring_install lean_power_audit'
+ 'Aspetto desktop: font open source stile macOS, pulsanti finestra a sinistra, prompt Bash stile Kali (con conferma e backup)|1|macos_desktop_look lean_kali_terminal'
+)
+declare -a MENU_2=(
+ 'Suite base: LibreOffice (+ GTK3 multi-monitor), Calibre, Bitwarden, font compatibili MS|1|base_apps'
+ 'PDF avanzati, scanner e OCR (Okular, PDF Arranger, OCRmyPDF, Tesseract)|1|pdf_ocr_setup'
+ 'Produttività: HomeBank, OBS, HandBrake, DBeaver, Bruno, Pandoc (+ verifica)|1|lean_productivity_audit lean_productivity_install'
+ 'Note, database e progetti: AppFlowy (alternativa a Notion, AUR con consenso)|1|lean_appflowy'
+ 'Stampante: CUPS, rilevamento USB/rete, guida e pagina di prova|1|lean_printer_setup'
+)
+declare -a MENU_3=(
+ 'Firefox: installazione, uBlock Origin e privacy avanzata (policy reversibili)|1|lean_firefox_privacy_harden'
+ 'Firefox browser predefinito e rimozione Brave (solo se sicura e confermata)|1|lean_firefox_replace_brave'
+ 'Tema Firefox stile macOS: Cupertino (conferma nel browser)|1|firefox_macos_theme'
+ 'Launcher Google: Gmail, Keep, Calendar, Tasks, Docs, Sheets, Slides, Drive + guida famiglia|0|google_workspace lean_google_office lean_family_setup'
+ 'Email e messaggistica: Tuta Desktop (AUR) e Ferdium|1|lean_tuta_desktop lean_social_ferdium'
+ 'Ricostruisci e verifica tutti i 17 collegamenti web KDE (LLM, Google, Office)|0|lean_rebuild_web_shortcuts'
+)
+declare -a MENU_4=(
+ 'AI CLI e sviluppo: VS Code, Claude Code (con fix PATH npm/pacman), Codex CLI, Gemini CLI|1|ai_tools'
+ 'Launcher LLM web (ChatGPT, Claude, Gemini, Perplexity, Copilot, Manus, Mistral, Grok, Open WebUI) + sottomenu KDE|0|ai_desktop'
+ 'Tangram: aggregatore web LLM separato da Ferdium (senza API)|1|lean_tangram'
+ 'Ollama locale: servizio su localhost, accelerazione CUDA/ROCm se disponibile, Open WebUI opzionale|1|ollama_local'
+ 'Ollama: inventario e download dei soli modelli locali mancanti (con conferma)|0|lean_ollama_models'
+)
+declare -a MENU_5=(
+ 'Docker Engine + Compose + GitHub CLI (servizio non avviato)|1|docker_setup'
+ 'Ambiente di sviluppo completo: uv, VS Code, AI CLI, workspace vuoto e template sicuri|1|development_environment'
+ 'Attiva servizi di sviluppo: Docker e Ollama (con conferma)|1|enable_development_services'
+ 'GitHub: crea/verifica repository del progetto e sincronizza i file (privato per default)|1|lean_github_repo'
+)
+declare -a MENU_6=(
+ 'Cloud in KDE/Dolphin: Google Drive (kio-gdrive), Dropbox, MEGA, pCloud|1|cloud'
+ 'Syncthing: installazione, servizio utente e launcher KDE|1|lean_syncthing'
+ 'Smartphone: KDE Connect + supporto USB iPhone (libimobiledevice, ifuse)|1|iphone'
+ 'Diagnostica smartphone: USB e KDE Connect in LAN (sola lettura)|0|iphone_diagnostics'
+ 'Workflow foto da smartphone: strumenti di importazione + guida non distruttiva|1|lean_iphone_photo_workflow'
+ 'Fotografia RAW/ProRAW e video: digiKam, darktable, Kdenlive|1|photo_video'
+)
+declare -a MENU_7=(
+ 'Steam, controller e gaming: stack Vulkan per ogni GPU rilevata, MangoHud, GameMode|1|steam_setup'
+ 'GPU: preferenza per-app integrata / dedicata (NVIDIA PRIME o AMD DRI_PRIME) / Hybrid + shortcut KDE|0|lean_gpu_mode lean_gpu_shortcuts'
+ 'Virtualizzazione: QEMU/KVM, Virt-Manager, SPICE, USB redirection (+ launcher KDE)|1|lean_vm_install'
+ 'VM guidata: crea e avvia Windows 11 / Linux (macOS solo informazioni)|1|lean_vm_wizard'
+ 'Ripara solo il collegamento Virt-Manager nel menu KDE (senza reinstallare)|0|lean_vm_kde_launcher'
+)
+declare -a MENU_8=(
+ 'Audit sicurezza, backup e salute dischi: restic, SMART, Btrfs/snapper se presente|1|security_audit'
+ 'Blocco schermo KDE + audit cifratura LUKS (nessuna cifratura automatica)|1|lean_kde_lock lean_luks_audit'
+ 'Proton VPN: GUI + CLI dai repository (senza alterare la rete)|1|proton_vpn_setup'
+ 'Ledger Nano: client wallet, regole udev dedicate e diagnostica USB|1|ledger_setup lean_ledger_usb_audit'
+ 'Wallet DeFi browser: guida MetaMask/Rabby e sicurezza Ledger (nessuna estensione installata)|1|defi_setup lean_rabby_guide'
+)
+
+# Esegue una voce di menu: rilevamento hardware, sudo solo se necessario, audit browser, funzioni in sequenza.
+lean_run_entry(){
+ local entry="$1" label sudo_needed fnlist fn
+ IFS='|' read -r label sudo_needed fnlist <<< "$entry"
  detect_hardware
- if [[ "$choice" != 0 ]]; then lean_browser_audit; fi
+ if [[ "$sudo_needed" == 1 ]] && ! sudo -v; then
+   echo '[ERRORE] Autenticazione sudo non riuscita: voce non eseguita'; return 0
+ fi
+ lean_browser_audit
  if [[ "$HW_PROFILE" == unknown ]]; then
    echo '[INFO] GPU non riconosciuta: procedo senza forzare driver; il menu resta disponibile.'
  fi
+ say "▶ $label"
+ local -a fns=()
+ IFS=' ' read -r -a fns <<< "$fnlist"
+ for fn in "${fns[@]}"; do run_step "$fn"; done
+}
+
+# Sottomenu di una categoria: elenco numerato generato dai dati, 0 per tornare indietro.
+lean_category_menu(){
+ local cat="$1" choice i label
+ local -n items="MENU_$cat"
+ while true; do
+   printf '\n %s) %s\n' "$cat" "${MENU_TITLE[$cat]}"
+   for i in "${!items[@]}"; do
+     IFS='|' read -r label _ <<< "${items[$i]}"
+     printf '  %d) %s\n' "$((i+1))" "$label"
+   done
+   echo '  0) Indietro'
+   read -r -p 'Scelta [0]: ' choice || return 0
+   choice=${choice:-0}
+   [[ "$choice" == 0 ]] && return 0
+   if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#items[@]} )); then
+     lean_run_entry "${items[$((choice-1))]}"
+   else
+     echo 'Scelta non valida'
+   fi
+ done
+}
+
+while true; do
+ echo
+ echo ' B) PERCORSO GUIDATO SICURO — profilo hardware adattivo; aggiornamenti/installazioni con conferma (INVIO)'
+ for cat in 1 2 3 4 5 6 7 8; do
+   printf '  %s) %s\n' "$cat" "${MENU_TITLE[$cat]}"
+ done
+ echo '  0) Esci'
+ echo ' Nota: il rilevamento hardware avviene automaticamente prima di ogni operazione'
+ read -r -p 'Scelta [B]: ' choice || break
+ choice=${choice:-B}
  case "$choice" in
-  [Bb]) lean_guided; break;;
-  1) preflight;;
-  2) update_system;;
-  3) migration;;
-  4) base_apps;;
-  5) steam_setup;;
-  6) ai_tools;;
-  7) lean_firefox_replace_brave; lean_firefox_privacy_harden; ai_desktop;;
-  8) cloud;;
-  9) iphone;;
-  10) privacy;;
-  11) fix_claude_path;;
-  12) firefox_macos_theme;;
-  13) ledger_setup;;
-  14) proton_vpn_setup;;
-  15) docker_setup;;
-  16) defi_setup;;
-  17) pdf_ocr_setup;;
-  18) photo_video;;
-  19) google_workspace; lean_google_office;;
-  20) ollama_local;;
-  21) iphone_diagnostics;;
-  22) security_audit;;
-  23) development_environment;;
-  24) enable_development_services;;
-  25) maintenance;;
-  26) macos_desktop_look;;
-  27) lean_monitoring_install;;
-  28) lean_ssd_maintenance;;
-  29) lean_power_audit;;
-  30) lean_ledger_usb_audit;;
-  31) lean_rabby_guide;;
-  32) lean_v10_all;;
-  33) lean_v12_all;;
-  34) lean_v18_all;;
-  35) google_workspace; lean_family_setup;;
-  36) lean_hp_printer_setup;;
-  37) lean_libreoffice_gtk3;;
-  38) maintenance_audit;;
-  39) lean_guided;;
-  40) dropbox_kde;;
-  41) lean_gpu_mode;;
-  42) lean_social_ferdium;;
-  43) lean_gpu_shortcuts;;
-  44) detect_hardware;;
-  45) lean_vm_install;;
-  46) lean_vm_wizard;;
-  47) lean_vm_kde_launcher;;
-  48) lean_firefox_privacy_harden;;
-  49) lean_office_fonts;;
-  50) lean_google_office;;
-  51) lean_tuta_desktop;;
-  52) lean_postinstall_review;;
-  53) lean_appflowy;;
-  54) lean_syncthing;;
-  55) maintenance_audit; lean_safe_cleanup;;
-  56) lean_github_repo;;
-  57) install_repo nodejs npm; install_codex_cli;;
-  58) lean_rebuild_web_shortcuts;;
+  [Bb])
+   detect_hardware
+   if ! sudo -v; then echo '[ERRORE] Autenticazione sudo non riuscita'; continue; fi
+   lean_browser_audit
+   lean_guided; break;;
+  [1-8]) lean_category_menu "$choice";;
   0) LEAN_QUICK_EXIT=1; break;;
   *) echo 'Scelta non valida';;
  esac
 done
 echo "Log: $LOG"
-echo "Il report finale verrà stampato e salvato in: $REPORT"
+echo "Cartella log/report: $LEAN_LOG_DIR"
+if [[ "${LEAN_QUICK_EXIT:-0}" != 1 ]]; then echo "Il report finale verrà stampato e salvato in: $REPORT"; fi
