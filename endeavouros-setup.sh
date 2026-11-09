@@ -126,7 +126,7 @@ report_final(){
    lean_vm_final_report
    lean_github_report
    lean_syncthing_report
-   lean_affine_report
+   lean_workspace_report
    lean_workspace_final_report
    echo "Log dettagliato: $LOG"
    echo "Report salvato: $REPORT"
@@ -363,56 +363,109 @@ lean_office_fonts(){
  echo 'I font Microsoft originali (Arial, Calibri, Aptos, ecc.) NON vengono scaricati senza licenza/fonte autorizzata.'
  report_ok 'Font metricamente compatibili con Microsoft Office richiesti; verifica pacchetti nel report'
 }
-# AFFiNE: workspace local-first. Installazione nativa Arch/AUR solo su consenso.
-# Non disinstalla AppFlowy né cancella dati o launcher personali.
-lean_affine(){
- say 'AFFiNE: verifica e installazione desktop nativa (Arch/AUR)'
- if has_pkg affine-bin || has_pkg affine; then
-   report_ok 'AFFiNE: già installato'
- else
-   local candidate=''
-   for candidate in affine-bin affine; do
-     if pacman -Si "$candidate" >/dev/null 2>&1; then
-       if ask "Installare AFFiNE dal repository Arch ($candidate)?"; then
-         sudo pacman -S --needed "$candidate" || { report_fail 'AFFiNE: installazione pacman fallita'; return 1; }
-       else report_skip 'AFFiNE: installazione rifiutata'; return 0; fi
-       break
-     fi
-   done
-   if ! has_pkg affine-bin && ! has_pkg affine; then
-     if ! command -v yay >/dev/null 2>&1; then
-       report_warn 'AFFiNE: yay assente; installazione AUR non eseguita'; return 0
-     fi
-     candidate=''
-     local pkg
-     for pkg in affine-bin affine; do
-       if yay -Si "$pkg" >/dev/null 2>&1; then candidate="$pkg"; break; fi
-     done
-     if [[ -z "$candidate" ]]; then
-       report_warn 'AFFiNE: nessun pacchetto affine-bin/affine trovato nei repository/AUR. Download ufficiale: https://affine.pro/download'
-       return 0
-     fi
-     echo "Controlla il PKGBUILD AUR di $candidate prima di confermare."
-     if ask "Installare AFFiNE tramite yay ($candidate)?"; then
-       yay -S --needed "$candidate" || { report_fail 'AFFiNE: installazione AUR fallita'; return 1; }
-     else report_skip 'AFFiNE: installazione rifiutata'; return 0; fi
-   fi
+# Workspace selection: never uninstall or migrate existing data.
+# Hosting is an independent, explicit decision; no ports, Docker stacks or router changes here.
+lean_workspace_package(){
+ local product="$1"; shift
+ local pkg candidate=''
+ for pkg in "$@"; do
+   if has_pkg "$pkg"; then report_ok "$product: già installato ($pkg)"; return 0; fi
+ done
+ for pkg in "$@"; do
+   if pacman -Si "$pkg" >/dev/null 2>&1; then candidate="$pkg"; break; fi
+ done
+ if [[ -n "$candidate" ]]; then
+   if ask "Installare $product dal repository ufficiale ($candidate)?"; then
+     sudo pacman -S --needed "$candidate" || { report_fail "$product: installazione fallita"; return 1; }
+   else report_skip "$product: installazione rifiutata"; fi
+   return 0
  fi
- if has_pkg affine-bin || has_pkg affine; then
-   report_ok 'AFFiNE: pacchetto installato; verifica launcher dal menu KDE'
- else report_warn 'AFFiNE: pacchetto non presente dopo la procedura'; fi
- if command -v kbuildsycoca6 >/dev/null 2>&1; then kbuildsycoca6 --noincremental >/dev/null 2>&1 || true; fi
+ if ! command -v yay >/dev/null 2>&1; then
+   report_warn "$product: non disponibile nei repository; yay assente. Nessuna installazione eseguita."
+   return 0
+ fi
+ for pkg in "$@"; do
+   if yay -Si "$pkg" >/dev/null 2>&1; then candidate="$pkg"; break; fi
+ done
+ if [[ -z "$candidate" ]]; then
+   report_warn "$product: pacchetto non trovato. Verificare sito ufficiale e disponibilità AUR."
+   return 0
+ fi
+ echo "ATTENZIONE: verifica il PKGBUILD AUR di $candidate prima di installare."
+ if ask "Installare $product da AUR ($candidate)?"; then
+   yay -S --needed "$candidate" || { report_fail "$product: installazione AUR fallita"; return 1; }
+ else report_skip "$product: installazione rifiutata"; fi
 }
-
-lean_affine_report(){
- echo
- echo 'AFFiNE — WORKSPACE / NOTE'
- if has_pkg affine-bin || has_pkg affine; then
-   echo '  [OK] Pacchetto AFFiNE installato'
- else
-   echo '  [DA FARE] AFFiNE non installato: voce 53 (pacman o yay con consenso)'
+lean_workspace_notion(){
+ local appdir="$HOME/.local/share/applications"
+ local file="$appdir/lean-notion-web.desktop"
+ echo 'Notion è un servizio cloud gestito: non esiste un server Notion ufficiale self-hosted.'
+ echo 'Sito: https://www.notion.so/'
+ if [[ -e "$file" ]]; then
+   echo "Launcher Notion già presente: $file (non sovrascritto)"
+   report_ok 'Notion: launcher esistente preservato'
+   return 0
  fi
- echo '  [INFO] Nessun dato AppFlowy viene cancellato o migrato automaticamente'
+ if ! command -v firefox >/dev/null 2>&1; then
+   report_warn 'Notion: Firefox assente; launcher non creato'; return 0
+ fi
+ if ! ask 'Creare un nuovo launcher Notion nel menu KDE (senza modificare gli altri)?'; then
+   report_skip 'Notion: launcher non richiesto'; return 0
+ fi
+ mkdir -p "$appdir"
+ cat > "$file" <<'DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=Notion (Web)
+Comment=Workspace cloud Notion
+Exec=firefox --new-window https://www.notion.so/
+Icon=applications-office
+Terminal=false
+Categories=Office;
+StartupNotify=true
+DESKTOP
+ report_ok 'Notion: launcher web creato; nessun account configurato'
+}
+lean_workspace_hosting(){
+ echo
+ echo '=== HOSTING E ACCESSO REMOTO: SOLO INFORMAZIONI ==='
+ echo '1) AFFiNE: cloud gestito o server self-hosted (verificare limiti funzionali/versione).'
+ echo '2) AppFlowy: cloud gestito o AppFlowy Cloud self-hosted (stack e manutenzione dedicati).'
+ echo '3) Notion: cloud gestito, nessun server Notion ufficiale self-hosted.'
+ echo 'Self-host: Docker/Compose su mini server + backup + aggiornamenti + storage persistente.'
+ echo 'Accesso remoto: Tailscale, senza port forwarding o modifiche al router Fastweb.'
+ echo 'ATTENZIONE: installare la sola app desktop NON configura hosting né sincronizzazione.'
+ echo 'Nessun servizio viene esposto, installato o modificato da questa opzione.'
+}
+lean_workspace_choice(){
+ local selection
+ echo
+ echo '=== SCEGLI IL WORKSPACE (nessuna scelta predefinita) ==='
+ echo '1) AFFiNE — desktop, cloud gestito oppure self-hosting'
+ echo '2) AppFlowy — desktop, cloud gestito oppure self-hosting'
+ echo '3) Notion — browser, solo cloud gestito'
+ echo '4) Confronta hosting / self-hosting (nessuna installazione)'
+ echo '0) Salta (preserva tutte le installazioni esistenti)'
+ read -r -p 'Scelta [0-4]: ' selection || { report_skip 'Workspace: input non disponibile'; return 0; }
+ case "$selection" in
+   1) lean_workspace_package 'AFFiNE' affine-bin affine;;
+   2) lean_workspace_package 'AppFlowy' appflowy-bin appflowy;;
+   3) lean_workspace_notion;;
+   4) lean_workspace_hosting;;
+   0|'') report_skip 'Workspace: nessuna modifica richiesta';;
+   *) report_warn "Workspace: scelta non valida ($selection), nessuna modifica";;
+ esac
+}
+lean_workspace_report(){
+ echo
+ echo 'WORKSPACE — AFFiNE / APPFLOWY / NOTION'
+ if has_pkg affine-bin || has_pkg affine; then echo '  [OK] AFFiNE presente'; else echo '  [INFO] AFFiNE non rilevato'; fi
+ if has_pkg appflowy-bin || has_pkg appflowy; then echo '  [OK] AppFlowy presente'; else echo '  [INFO] AppFlowy non rilevato'; fi
+ if [[ -f "$HOME/.local/share/applications/lean-notion-web.desktop" ]]; then
+   echo '  [OK] Notion: launcher web presente'
+ else echo '  [INFO] Notion: launcher LEAN non rilevato'; fi
+ echo '  [INFO] Hosting remoto non configurato automaticamente'
+ echo '  [INFO] Nessuna rimozione o migrazione dati'
 }
 
 # Inventario browser in sola lettura: deve precedere ogni installazione nel percorso B.
@@ -3022,7 +3075,7 @@ lean_guided(){
  local fn fails_before
  local -a phases=(
    lean_base_apps_no_removal lean_vm_install ai_tools docker_setup
-   lean_tuta_desktop lean_social_ferdium lean_affine
+   lean_tuta_desktop lean_social_ferdium lean_workspace_choice
    lean_office_fonts cloud iphone pdf_ocr_setup photo_video
    lean_productivity_install lean_rebuild_web_shortcuts
  )
@@ -3321,7 +3374,7 @@ while true; do
  50) Google Docs, Sheets, Slides, Drive (Firefox)
  51) Tuta Mail (solo client desktop AUR, nessun fallback web)
  52) Audit hardware e pulizia conservativa
- 53) AFFiNE: note, documenti e whiteboard (alternativa a Notion)
+ 53) Workspace: scegli AFFiNE, AppFlowy o Notion (cloud/self-host info)
  54) Syncthing: installa, avvia e crea collegamento KDE
  55) Audit e pulizia sicura: dipendenze, orfani e cache
  56) GitHub: crea/verifica repository e sincronizza 4 file (script + 3 guide)
@@ -3403,7 +3456,7 @@ MENU
   50) lean_google_office;;
   51) lean_tuta_desktop;;
   52) lean_postinstall_review;;
-  53) lean_affine;;
+  53) lean_workspace_choice;;
   54) lean_syncthing;;
   55) maintenance_audit; lean_safe_cleanup;;
   56) lean_github_repo;;
